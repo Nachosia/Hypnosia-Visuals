@@ -50,7 +50,7 @@ Role values returned by the server must be one of the client allow-list values:
 ```text
 USER
 PREMIUM
-BETA
+ALPHA_TESTER
 ADMIN
 OWNER
 ```
