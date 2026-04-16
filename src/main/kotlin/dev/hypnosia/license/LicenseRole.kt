@@ -3,7 +3,7 @@ package dev.hypnosia.license
 enum class LicenseRole {
     USER,
     PREMIUM,
-    ALPHA_TESTER,
+    QA,
     ADMIN,
     OWNER;
 
