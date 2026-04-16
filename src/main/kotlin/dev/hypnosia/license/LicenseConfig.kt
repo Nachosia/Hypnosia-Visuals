@@ -9,7 +9,6 @@ import kotlin.io.path.outputStream
 
 data class LicenseConfig(
     val licenseKey: String?,
-    val apiUrlOverride: String?,
 ) {
     companion object {
         private const val CONFIG_FILE_NAME = "license.properties"
@@ -23,14 +22,13 @@ data class LicenseConfig(
                 configDir.createDirectories()
                 val defaults = Properties()
                 defaults["license.key"] = ""
-                defaults["api.url"] = ""
                 configFile.outputStream().use { output ->
                     defaults.store(
                         output,
-                        "Hypnosia license config. Put only your 32-character license key here.",
+                        "Hypnosia license config. Put only your 32-character license key here. Server settings are not stored on the client.",
                     )
                 }
-                return LicenseConfig(licenseKey = null, apiUrlOverride = null)
+                return LicenseConfig(licenseKey = null)
             }
 
             val properties = Properties()
@@ -42,13 +40,8 @@ data class LicenseConfig(
                 ?.takeIf { licenseRegex.matches(it) }
                 ?.uppercase()
 
-            val apiUrl = properties.getProperty("api.url")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-
             return LicenseConfig(
                 licenseKey = key,
-                apiUrlOverride = apiUrl,
             )
         }
     }

@@ -18,7 +18,7 @@ object HypnosiaClient : ClientModInitializer {
 
     override fun onInitializeClient() {
         HypnosiaShaders.initialize()
-        LicenseManager.refreshAsync()
+        LicenseManager.startSessionAsync()
 
         openMenuKey = KeyBindingHelper.registerKeyBinding(
             KeyBinding(

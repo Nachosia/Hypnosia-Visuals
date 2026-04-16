@@ -11,17 +11,34 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicReference
 
 object LicenseManager {
+    // Public endpoint only. Never put admin tokens, database credentials, VPS
+    // passwords, or signing private keys in the client mod.
     private const val DEFAULT_API_URL = ""
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(4))
         .build()
 
     private val stateRef = AtomicReference<LicenseState>(LicenseState.NotChecked)
+    private val sessionFutureRef = AtomicReference<CompletableFuture<LicenseState>?>(null)
 
     val state: LicenseState
         get() = stateRef.get()
 
-    fun refreshAsync(): CompletableFuture<LicenseState> {
+    val sessionRole: LicenseRole
+        get() = (state as? LicenseState.Valid)?.role ?: LicenseRole.USER
+
+    fun startSessionAsync(): CompletableFuture<LicenseState> {
+        sessionFutureRef.get()?.let { return it }
+
+        val future = checkLicenseOnceAsync()
+        return if (sessionFutureRef.compareAndSet(null, future)) {
+            future
+        } else {
+            sessionFutureRef.get() ?: future
+        }
+    }
+
+    private fun checkLicenseOnceAsync(): CompletableFuture<LicenseState> {
         val config = LicenseConfig.loadOrCreate()
         val licenseKey = config.licenseKey
 
@@ -29,10 +46,11 @@ object LicenseManager {
             return completed(LicenseState.NoKey)
         }
 
-        val apiUrl = config.apiUrlOverride ?: DEFAULT_API_URL.takeIf { it.isNotBlank() }
+        val apiUrl = DEFAULT_API_URL.takeIf { it.isNotBlank() }
         if (apiUrl == null) {
             return completed(LicenseState.NoEndpoint)
         }
+        val apiUri = secureApiUri(apiUrl) ?: return completed(LicenseState.InsecureEndpoint)
 
         val requestBody = licenseRequestJson(
             licenseKey = licenseKey,
@@ -41,7 +59,7 @@ object LicenseManager {
             modVersion = modVersion(),
         )
 
-        val request = HttpRequest.newBuilder(URI.create(apiUrl.trimEnd('/') + "/api/license/check"))
+        val request = HttpRequest.newBuilder(apiUri.resolve("/api/license/check"))
             .timeout(Duration.ofSeconds(8))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody))
@@ -80,10 +98,24 @@ object LicenseManager {
             return LicenseState.ServerRejected(status ?: "INVALID")
         }
 
+        val role = LicenseRole.parse(stringValue(body, "role"))
+            ?: return LicenseState.InvalidResponse
+
         return LicenseState.Valid(
-            role = stringValue(body, "role") ?: "USER",
+            role = role,
             status = status ?: "OK",
         )
+    }
+
+    private fun secureApiUri(apiUrl: String): URI? {
+        val uri = runCatching { URI.create(apiUrl.trimEnd('/') + "/") }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase() ?: return null
+        val host = uri.host?.lowercase() ?: return null
+        val localDev = host == "localhost" || host == "127.0.0.1" || host == "::1"
+        if (scheme != "https" && !(scheme == "http" && localDev)) {
+            return null
+        }
+        return uri
     }
 
     private fun licenseRequestJson(
@@ -137,8 +169,9 @@ sealed class LicenseState {
     data object NotChecked : LicenseState()
     data object NoKey : LicenseState()
     data object NoEndpoint : LicenseState()
+    data object InsecureEndpoint : LicenseState()
     data object InvalidResponse : LicenseState()
-    data class Valid(val role: String, val status: String) : LicenseState()
+    data class Valid(val role: LicenseRole, val status: String) : LicenseState()
     data class ServerRejected(val reason: String) : LicenseState()
     data class NetworkError(val message: String) : LicenseState()
 }

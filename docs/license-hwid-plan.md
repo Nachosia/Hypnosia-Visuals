@@ -45,6 +45,18 @@ Example server-side license row:
 }
 ```
 
+Role values returned by the server must be one of the client allow-list values:
+
+```text
+USER
+PREMIUM
+BETA
+ADMIN
+OWNER
+```
+
+Unknown roles are treated as an invalid response.
+
 ## Client Request
 
 ```json
@@ -57,6 +69,7 @@ Example server-side license row:
 ```
 
 The client must not send this request when `config/hypnosia/license.properties` is missing or `license.key` is blank.
+The client also does not read the API URL from `license.properties`; server endpoint configuration belongs to the build/server deployment, not the user config.
 
 Startup flow:
 
@@ -69,7 +82,23 @@ if license.key is blank:
 else:
   calculate HWID hash
   call /api/license/check
+  keep the returned role in LicenseManager.state for the whole Minecraft session
 ```
+
+The client starts this flow once from `HypnosiaClient.onInitializeClient()` through:
+
+```text
+LicenseManager.startSessionAsync()
+```
+
+`startSessionAsync()` is idempotent. If it is called again by UI code, it returns the already-created session future and does not perform another HTTP request. Menus and widgets must read:
+
+```text
+LicenseManager.state
+LicenseManager.sessionRole
+```
+
+They must not call the server directly.
 
 ## First HWID Binding
 
