@@ -19,6 +19,7 @@ HardwareFingerprint.currentHash64()
 ```
 
 Prefer storing the full 64-character hash on the server and showing the 32-character key to users/admins.
+In the current local server implementation, admins manage keys from the server console only. There is no web panel.
 
 ## Source Priority
 
@@ -134,3 +135,9 @@ If the row is already bound, the server compares the stored `hwidHash` with the 
 - Do not commit fallback `install-id.dat` or license cache files.
 - HWID binding is stronger than UUID-only binding, but it is still client-side and can be bypassed by a modified client jar.
 - Users who reinstall Windows or replace major hardware may need a manual HWID reset.
+
+For the console server, the reset command is:
+
+```text
+reset-hwid <key>
+```

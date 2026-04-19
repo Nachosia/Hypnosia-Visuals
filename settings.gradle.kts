@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "hypnosia"
+include("license-server")

@@ -40,6 +40,8 @@ license-cache.dat
 license.properties
 install-id.dat
 hardware-fingerprint.txt
+/data/
+/license-server/data/
 *.pem
 *.key
 *.p8
