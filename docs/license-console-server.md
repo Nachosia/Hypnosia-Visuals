@@ -32,6 +32,8 @@ POST /api/license/check
 
 ## Console Commands
 
+Interactive mode:
+
 ```text
 help
 list
@@ -44,6 +46,14 @@ enable <key>
 reset-hwid <key>
 delete <key>
 exit
+```
+
+Daemon/server mode can be managed with one-shot commands:
+
+```bash
+/opt/hypnosia/server/bin/license-server create QA never
+/opt/hypnosia/server/bin/license-server list
+/opt/hypnosia/server/bin/license-server reset-hwid <key>
 ```
 
 Roles:

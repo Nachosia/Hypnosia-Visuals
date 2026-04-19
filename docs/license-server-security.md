@@ -14,7 +14,7 @@ The public mod must never contain anything that can grant server access. Current
 
 ## Server Rules
 
-- Manage keys only through the VPS console over SSH.
+- Manage keys only through the VPS console over SSH, using the local `license-server <command>` CLI.
 - Keep `HYPNOSIA_LICENSE_DATA` outside the Git repository on the VPS.
 - Do not expose the license data file or backup files through Nginx.
 - Put the public API behind Nginx with HTTPS.

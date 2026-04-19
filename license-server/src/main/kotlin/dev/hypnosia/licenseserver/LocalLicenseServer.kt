@@ -12,6 +12,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -28,12 +29,18 @@ private val roles = setOf("USER", "PREMIUM", "QA", "ADMIN", "OWNER")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
 private val hwidHashRegex = Regex("^[A-Fa-f0-9]{64}$")
 
-fun main() {
+fun main(args: Array<String>) {
     val host = env("HYPNOSIA_LICENSE_HOST") ?: DEFAULT_HOST
     val port = env("HYPNOSIA_LICENSE_PORT")?.toIntOrNull() ?: DEFAULT_PORT
     val dataFile = Path.of(env("HYPNOSIA_LICENSE_DATA") ?: DEFAULT_DATA_FILE)
 
     val storage = LicenseStorage(dataFile)
+
+    if (args.isNotEmpty()) {
+        ConsoleAdmin(storage).execute(args.toList())
+        return
+    }
+
     val server = HttpServer.create(InetSocketAddress(host, port), 0)
     server.createContext("/api/license/check") { exchange -> checkLicense(exchange, storage) }
     server.createContext("/health") { exchange -> json(exchange, 200, """{"ok":true}""") }
@@ -44,8 +51,20 @@ fun main() {
     println("Data file: ${dataFile.toAbsolutePath()}")
     println("Type 'help' for commands.")
 
-    ConsoleAdmin(storage).loop()
-    server.stop(0)
+    Runtime.getRuntime().addShutdownHook(Thread {
+        server.stop(2)
+    })
+
+    val consoleEnabled = env("HYPNOSIA_LICENSE_CONSOLE")
+        ?.toBooleanStrictOrNull()
+        ?: true
+
+    if (consoleEnabled) {
+        ConsoleAdmin(storage).loop()
+        server.stop(0)
+    } else {
+        CountDownLatch(1).await()
+    }
 }
 
 private class ConsoleAdmin(private val storage: LicenseStorage) {
@@ -58,35 +77,45 @@ private class ConsoleAdmin(private val storage: LicenseStorage) {
             }
 
             val args = splitArgs(line)
-            val command = args.first().lowercase(Locale.ROOT)
-            try {
-                when (command) {
-                    "help", "?" -> help()
-                    "list", "ls" -> list()
-                    "show" -> show(args)
-                    "create", "new" -> create(args)
-                    "role" -> role(args)
-                    "expires", "expire" -> expires(args)
-                    "disable" -> setDisabled(args, disabled = true)
-                    "enable" -> setDisabled(args, disabled = false)
-                    "reset", "reset-hwid" -> resetHwid(args)
-                    "delete", "del", "remove" -> delete(args)
-                    "exit", "quit", "stop" -> return
-                    else -> println("Unknown command '$command'. Type 'help'.")
-                }
-            } catch (error: IllegalArgumentException) {
-                println("Error: ${error.message}")
-            } catch (error: Throwable) {
-                println("Unexpected error: ${error.message}")
-                error.printStackTrace()
+            if (!execute(args)) {
+                return
             }
         }
+    }
+
+    fun execute(args: List<String>): Boolean {
+        val command = args.firstOrNull()?.lowercase(Locale.ROOT) ?: return true
+        try {
+            when (command) {
+                "help", "?" -> help()
+                "list", "ls" -> list()
+                "show" -> show(args)
+                "create", "new" -> create(args)
+                "role" -> role(args)
+                "expires", "expire" -> expires(args)
+                "disable" -> setDisabled(args, disabled = true)
+                "enable" -> setDisabled(args, disabled = false)
+                "reset", "reset-hwid" -> resetHwid(args)
+                "delete", "del", "remove" -> delete(args)
+                "exit", "quit", "stop" -> return false
+                else -> println("Unknown command '$command'. Type 'help'.")
+            }
+        } catch (error: IllegalArgumentException) {
+            println("Error: ${error.message}")
+        } catch (error: Throwable) {
+            println("Unexpected error: ${error.message}")
+            error.printStackTrace()
+        }
+        return true
     }
 
     private fun help() {
         println(
             """
             Commands:
+              license-server <command> [args]
+
+            Interactive/server commands:
               list
               show <key>
               create <role> [YYYY-MM-DD|never] [custom-32-char-key]
