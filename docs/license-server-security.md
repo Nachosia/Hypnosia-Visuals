@@ -23,6 +23,7 @@ The public mod must never contain anything that can grant server access. Current
   - `80/tcp`
   - `443/tcp`
 - Bind the Kotlin service to `127.0.0.1` when Nginx proxies to it.
+- Bind the optional admin panel to `127.0.0.1:9090` and access it only through an SSH tunnel.
 - Disable password SSH login after adding an SSH key.
 - Use a non-root deploy user, for example `hypnosia`.
 - Run the API as a systemd service under the non-root user.
@@ -80,6 +81,7 @@ They must not see:
 
 - server password
 - SSH private key
+- admin panel password
 - license data file
 - signing private key
 - raw user HWID values

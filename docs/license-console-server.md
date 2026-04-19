@@ -40,6 +40,18 @@ hypnosia-menu
 
 The menu wraps the common commands: create, list, show, role change, expiration change, HWID reset, disable, enable, delete, service status, logs, restart, and backup.
 
+Local web panel through SSH tunnel:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\hypnosia_codex" -L 9090:127.0.0.1:9090 root@2.26.0.174
+```
+
+Then open:
+
+```text
+http://127.0.0.1:9090
+```
+
 Interactive mode:
 
 ```text
