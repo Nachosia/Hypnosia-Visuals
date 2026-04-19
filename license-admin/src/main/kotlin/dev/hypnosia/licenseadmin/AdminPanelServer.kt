@@ -28,9 +28,11 @@ import kotlin.io.path.writeText
 private const val DEFAULT_HOST = "127.0.0.1"
 private const val DEFAULT_PORT = 9090
 private const val DEFAULT_DATA_FILE = "data/licenses.tsv"
+private const val DEFAULT_CLOUD_CONFIG_FILE = "data/cloud-configs.tsv"
 private const val DEFAULT_BACKUP_DIR = "data/backups"
 private val roles = setOf("USER", "PREMIUM", "QA", "ADMIN", "OWNER")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
+private val cloudConfigKeyRegex = Regex("^[A-Z0-9]{8}$")
 
 fun main() {
     val host = env("HYPNOSIA_ADMIN_HOST") ?: DEFAULT_HOST
@@ -43,13 +45,14 @@ fun main() {
     }
 
     val storage = LicenseStorage(Path.of(env("HYPNOSIA_LICENSE_DATA") ?: DEFAULT_DATA_FILE))
+    val cloudConfigStorage = CloudConfigStorage(Path.of(env("HYPNOSIA_CLOUD_CONFIG_DATA") ?: DEFAULT_CLOUD_CONFIG_FILE))
     val backupDir = Path.of(env("HYPNOSIA_BACKUP_DIR") ?: DEFAULT_BACKUP_DIR)
     val auth = BasicAuth(
         username = env("HYPNOSIA_ADMIN_USER") ?: "admin",
         password = password,
     )
 
-    val panel = AdminPanel(storage, backupDir, auth)
+    val panel = AdminPanel(storage, cloudConfigStorage, backupDir, auth)
     val server = HttpServer.create(InetSocketAddress(host, port), 0)
     server.createContext("/") { exchange -> panel.route(exchange) }
     server.executor = Executors.newFixedThreadPool(4)
@@ -62,6 +65,7 @@ fun main() {
 
 private class AdminPanel(
     private val storage: LicenseStorage,
+    private val cloudConfigStorage: CloudConfigStorage,
     private val backupDir: Path,
     private val auth: BasicAuth,
 ) {
@@ -77,6 +81,10 @@ private class AdminPanel(
                 "/update" -> requireMethod(exchange, "POST") { update(exchange) }
                 "/reset-hwid" -> requireMethod(exchange, "POST") { resetHwid(exchange) }
                 "/delete" -> requireMethod(exchange, "POST") { delete(exchange) }
+                "/download-license" -> requireMethod(exchange, "GET") { downloadLicense(exchange) }
+                "/cloud-config/download" -> requireMethod(exchange, "GET") { downloadCloudConfig(exchange) }
+                "/cloud-config/toggle" -> requireMethod(exchange, "POST") { toggleCloudConfig(exchange) }
+                "/cloud-config/delete" -> requireMethod(exchange, "POST") { deleteCloudConfig(exchange) }
                 "/backup" -> requireMethod(exchange, "POST") { backup(exchange) }
                 else -> text(exchange, 404, "Not found")
             }
@@ -90,6 +98,7 @@ private class AdminPanel(
 
     private fun index(exchange: HttpExchange) {
         val records = storage.all()
+        val cloudConfigs = cloudConfigStorage.all()
         val message = query(exchange, "msg")
         val error = query(exchange, "error")
         val stats = LicenseStats.from(records)
@@ -129,6 +138,18 @@ private class AdminPanel(
                 append("</div>")
             }
             append("</section>")
+
+            append("<section class=\"card\"><h2>Cloud Configs</h2>")
+            append("<p class=\"muted\">Player-shared module configs saved through /api/cloud-config/save. Players share the 8-character config key.</p>")
+            if (cloudConfigs.isEmpty()) {
+                append("<p class=\"muted\">No cloud configs yet.</p>")
+            } else {
+                append("<div class=\"table cloud\">")
+                append("<div class=\"row cloud-row head\"><span>Config key</span><span>Name</span><span>Owner HWID</span><span>Owner license</span><span>State</span><span>Updated</span><span>Actions</span></div>")
+                cloudConfigs.forEach { record -> cloudConfigRow(record) }
+                append("</div>")
+            }
+            append("</section>")
         })
     }
 
@@ -147,6 +168,7 @@ private class AdminPanel(
         append("<span>${esc(record.expiresAt?.substringBefore('T') ?: "never")}</span>")
         append("<span>${esc(record.hwidHash?.take(12) ?: "-")}</span>")
         append("<div class=\"actions\">")
+        append("<a class=\"button\" href=\"/download-license?key=${url(record.licenseKey)}\">Download file</a>")
         append("<form method=\"post\" action=\"/update\">")
         hidden("key", record.licenseKey)
         append("<select name=\"role\">")
@@ -161,6 +183,27 @@ private class AdminPanel(
         append("</form>")
         postButton("/reset-hwid", record.licenseKey, "Reset HWID")
         postButton("/delete", record.licenseKey, "Delete", danger = true)
+        append("</div>")
+        append("</div>")
+    }
+
+    private fun StringBuilder.cloudConfigRow(record: CloudConfigRecord) {
+        val state = if (record.disabled) "disabled" else "active"
+        append("<div class=\"row cloud-row\">")
+        append("<code>${esc(record.configKey)}</code>")
+        append("<span>${esc(record.name)}</span>")
+        append("<span>${esc(record.ownerHwidHash.take(12))}</span>")
+        append("<span>${esc(record.ownerLicenseKey ?: "-")}</span>")
+        append("<span class=\"pill ${if (record.disabled) "disabled" else "bound"}\">$state</span>")
+        append("<span>${esc(record.updatedAt.substringBefore('T'))}</span>")
+        append("<div class=\"actions\">")
+        append("<a class=\"button\" href=\"/cloud-config/download?key=${url(record.configKey)}\">Download</a>")
+        append("<form method=\"post\" action=\"/cloud-config/toggle\">")
+        hidden("key", record.configKey)
+        hidden("disabled", (!record.disabled).toString())
+        append("<button>${if (record.disabled) "Enable" else "Disable"}</button>")
+        append("</form>")
+        postButton("/cloud-config/delete", record.configKey, "Delete", danger = true)
         append("</div>")
         append("</div>")
     }
@@ -208,6 +251,42 @@ private class AdminPanel(
         redirect(exchange, "/?msg=${url("Deleted $key")}")
     }
 
+    private fun downloadLicense(exchange: HttpExchange) {
+        val key = queryLicenseKey(exchange)
+        storage.find(key) ?: throw IllegalArgumentException("License not found")
+        val body = """
+            # Hypnosia license config.
+            # Put this file into config/hypnosia/license.properties
+            license.key=$key
+        """.trimIndent() + "\n"
+        download(exchange, "license.properties", "text/plain; charset=utf-8", body.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun downloadCloudConfig(exchange: HttpExchange) {
+        val key = queryCloudConfigKey(exchange)
+        val record = cloudConfigStorage.find(key) ?: throw IllegalArgumentException("Cloud config not found")
+        download(
+            exchange = exchange,
+            filename = "${record.configKey}.json",
+            contentType = "application/json; charset=utf-8",
+            bytes = record.payloadBytes(),
+        )
+    }
+
+    private fun toggleCloudConfig(exchange: HttpExchange) {
+        val form = exchange.form()
+        val key = form.cloudConfigKey()
+        val disabled = form["disabled"]?.toBooleanStrictOrNull() ?: false
+        cloudConfigStorage.updateExisting(key) { copy(disabled = disabled, updatedAt = Instant.now().toString()) }
+        redirect(exchange, "/?msg=${url("Cloud config $key updated")}")
+    }
+
+    private fun deleteCloudConfig(exchange: HttpExchange) {
+        val key = exchange.form().cloudConfigKey()
+        cloudConfigStorage.deleteExisting(key)
+        redirect(exchange, "/?msg=${url("Cloud config $key deleted")}")
+    }
+
     private fun backup(exchange: HttpExchange) {
         backupDir.createDirectories()
         val target = backupDir.resolve("licenses-${Instant.now().toString().replace(":", "-")}.tsv")
@@ -236,6 +315,10 @@ private class LicenseStorage(private val file: Path) {
 
     fun all(): List<LicenseRecord> {
         return lock.read { readAll().sortedByDescending { it.createdAt } }
+    }
+
+    fun find(key: String): LicenseRecord? {
+        return lock.read { readAll().firstOrNull { it.licenseKey == key } }
     }
 
     fun create(record: LicenseRecord) {
@@ -300,6 +383,70 @@ private class LicenseStorage(private val file: Path) {
     }
 }
 
+private class CloudConfigStorage(private val file: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        file.parent?.createDirectories()
+        if (!file.exists()) {
+            file.writeText("")
+        }
+    }
+
+    fun all(): List<CloudConfigRecord> {
+        return lock.read { readAll().sortedByDescending { it.updatedAt } }
+    }
+
+    fun find(key: String): CloudConfigRecord? {
+        return lock.read { readAll().firstOrNull { it.configKey == key } }
+    }
+
+    fun updateExisting(key: String, transform: CloudConfigRecord.() -> CloudConfigRecord) {
+        lock.write {
+            var found = false
+            val records = readAll().map { record ->
+                if (record.configKey == key) {
+                    found = true
+                    record.transform()
+                } else {
+                    record
+                }
+            }
+            require(found) { "Cloud config not found" }
+            writeAll(records)
+        }
+    }
+
+    fun deleteExisting(key: String) {
+        lock.write {
+            val records = readAll()
+            require(records.any { it.configKey == key }) { "Cloud config not found" }
+            writeAll(records.filterNot { it.configKey == key })
+        }
+    }
+
+    private fun readAll(): List<CloudConfigRecord> {
+        return file.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(CloudConfigRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<CloudConfigRecord>) {
+        val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
+        tmp.writeText(records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+        runCatching {
+            Files.move(
+                tmp,
+                file,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        }.getOrElse {
+            Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+}
+
 private data class LicenseRecord(
     val licenseKey: String,
     val role: String,
@@ -338,6 +485,52 @@ private data class LicenseRecord(
                 boundAt = parts[4].ifBlank { null },
                 expiresAt = parts[5].ifBlank { null },
                 disabled = parts[6].toBooleanStrictOrNull() ?: false,
+            )
+        }
+    }
+}
+
+private data class CloudConfigRecord(
+    val configKey: String,
+    val ownerHwidHash: String,
+    val ownerLicenseKey: String?,
+    val name: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val disabled: Boolean,
+    val payloadBase64: String,
+) {
+    fun payloadBytes(): ByteArray {
+        return runCatching { Base64.getDecoder().decode(payloadBase64) }
+            .getOrElse { ByteArray(0) }
+    }
+
+    fun toLine(): String {
+        return listOf(
+            configKey,
+            ownerHwidHash,
+            ownerLicenseKey ?: "",
+            name,
+            createdAt,
+            updatedAt,
+            disabled.toString(),
+            payloadBase64,
+        ).joinToString("\t") { it.replace("\t", " ") }
+    }
+
+    companion object {
+        fun fromLine(line: String): CloudConfigRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 8) return null
+            return CloudConfigRecord(
+                configKey = parts[0],
+                ownerHwidHash = parts[1],
+                ownerLicenseKey = parts[2].ifBlank { null },
+                name = parts[3],
+                createdAt = parts[4],
+                updatedAt = parts[5],
+                disabled = parts[6].toBooleanStrictOrNull() ?: false,
+                payloadBase64 = parts[7],
             )
         }
     }
@@ -416,11 +609,15 @@ private fun page(title: String, body: StringBuilder.() -> Unit): String {
             .notice.ok { color: #97f2a8; }
             .notice.err { color: var(--danger); }
             .table { min-width: 1050px; }
+            .table.cloud { min-width: 1180px; }
             .row { display: grid; grid-template-columns: 280px 90px 100px 130px 100px 1fr; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+            .row.cloud-row { grid-template-columns: 100px 180px 130px 280px 90px 120px 1fr; }
             .row.head { color: var(--muted); font-size: 12px; text-transform: uppercase; border-top: 0; }
             .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
             .actions form { display: flex; gap: 8px; align-items: center; }
             .actions input { width: 118px; }
+            .button { display:inline-flex; align-items:center; text-decoration:none; border: 1px solid var(--line); border-radius: 8px; background: #181818; color: var(--text); padding: 9px 11px; font-weight: 650; }
+            .button:hover { border-color: var(--accent); }
             .pill { display:inline-flex; width:max-content; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
             .pill.bound { color:#97f2a8; }
             .pill.not-bound { color:#ffd37a; }
@@ -459,6 +656,20 @@ private fun StringBuilder.postButton(action: String, key: String, label: String,
     append("</form>")
 }
 
+private fun queryLicenseKey(exchange: HttpExchange): String {
+    val key = query(exchange, "key")?.trim()?.uppercase(Locale.ROOT)
+        ?: throw IllegalArgumentException("Missing key")
+    require(licenseRegex.matches(key)) { "Invalid key" }
+    return key
+}
+
+private fun queryCloudConfigKey(exchange: HttpExchange): String {
+    val key = query(exchange, "key")?.trim()?.uppercase(Locale.ROOT)
+        ?: throw IllegalArgumentException("Missing config key")
+    require(cloudConfigKeyRegex.matches(key)) { "Invalid config key" }
+    return key
+}
+
 private fun HttpExchange.form(): Map<String, String> {
     val raw = requestBody.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
     if (raw.isBlank()) return emptyMap()
@@ -473,6 +684,12 @@ private fun HttpExchange.form(): Map<String, String> {
 private fun Map<String, String>.key(): String {
     val key = get("key")?.trim()?.uppercase(Locale.ROOT) ?: throw IllegalArgumentException("Missing key")
     require(licenseRegex.matches(key)) { "Invalid key" }
+    return key
+}
+
+private fun Map<String, String>.cloudConfigKey(): String {
+    val key = get("key")?.trim()?.uppercase(Locale.ROOT) ?: throw IllegalArgumentException("Missing config key")
+    require(cloudConfigKeyRegex.matches(key)) { "Invalid config key" }
     return key
 }
 
@@ -522,6 +739,13 @@ private fun html(exchange: HttpExchange, body: String) {
 private fun text(exchange: HttpExchange, code: Int, body: String) {
     exchange.responseHeaders.set("Content-Type", "text/plain; charset=utf-8")
     write(exchange, code, body)
+}
+
+private fun download(exchange: HttpExchange, filename: String, contentType: String, bytes: ByteArray) {
+    exchange.responseHeaders.set("Content-Type", contentType)
+    exchange.responseHeaders.set("Content-Disposition", """attachment; filename="$filename"""")
+    exchange.sendResponseHeaders(200, bytes.size.toLong())
+    exchange.responseBody.use { it.write(bytes) }
 }
 
 private fun redirect(exchange: HttpExchange, location: String) {

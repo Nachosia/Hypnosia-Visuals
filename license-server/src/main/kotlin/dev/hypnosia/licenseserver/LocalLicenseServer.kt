@@ -25,16 +25,22 @@ import kotlin.io.path.writeText
 private const val DEFAULT_HOST = "127.0.0.1"
 private const val DEFAULT_PORT = 8080
 private const val DEFAULT_DATA_FILE = "data/licenses.tsv"
+private const val DEFAULT_CLOUD_CONFIG_FILE = "data/cloud-configs.tsv"
+private const val MAX_CLOUD_CONFIGS_PER_HWID = 3
+private const val MAX_CLOUD_CONFIG_PAYLOAD_BYTES = 64 * 1024
 private val roles = setOf("USER", "PREMIUM", "QA", "ADMIN", "OWNER")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
+private val cloudConfigKeyRegex = Regex("^[A-Z0-9]{8}$")
 private val hwidHashRegex = Regex("^[A-Fa-f0-9]{64}$")
 
 fun main(args: Array<String>) {
     val host = env("HYPNOSIA_LICENSE_HOST") ?: DEFAULT_HOST
     val port = env("HYPNOSIA_LICENSE_PORT")?.toIntOrNull() ?: DEFAULT_PORT
     val dataFile = Path.of(env("HYPNOSIA_LICENSE_DATA") ?: DEFAULT_DATA_FILE)
+    val cloudConfigFile = Path.of(env("HYPNOSIA_CLOUD_CONFIG_DATA") ?: DEFAULT_CLOUD_CONFIG_FILE)
 
     val storage = LicenseStorage(dataFile)
+    val cloudConfigStorage = CloudConfigStorage(cloudConfigFile)
 
     if (args.isNotEmpty()) {
         ConsoleAdmin(storage).execute(args.toList())
@@ -43,6 +49,9 @@ fun main(args: Array<String>) {
 
     val server = HttpServer.create(InetSocketAddress(host, port), 0)
     server.createContext("/api/license/check") { exchange -> checkLicense(exchange, storage) }
+    server.createContext("/api/cloud-config/save") { exchange -> saveCloudConfig(exchange, cloudConfigStorage) }
+    server.createContext("/api/cloud-config/load") { exchange -> loadCloudConfig(exchange, cloudConfigStorage) }
+    server.createContext("/api/cloud-config/delete") { exchange -> deleteCloudConfig(exchange, cloudConfigStorage) }
     server.createContext("/health") { exchange -> json(exchange, 200, """{"ok":true}""") }
     server.executor = Executors.newFixedThreadPool(8)
     server.start()
@@ -385,6 +394,136 @@ private data class LicenseRecord(
     }
 }
 
+private class CloudConfigStorage(private val file: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        file.parent?.createDirectories()
+        if (!file.exists()) {
+            file.writeText("")
+        }
+    }
+
+    fun create(
+        ownerHwidHash: String,
+        ownerLicenseKey: String?,
+        name: String,
+        payloadBase64: String,
+    ): CloudConfigCreateResult {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val used = records.count { it.ownerHwidHash.equals(ownerHwidHash, ignoreCase = true) && !it.disabled }
+            if (used >= MAX_CLOUD_CONFIGS_PER_HWID) {
+                return@write CloudConfigCreateResult.LimitReached(used)
+            }
+
+            val now = Instant.now().toString()
+            val key = generateCloudConfigKey(records.asSequence().map { it.configKey }.toSet())
+            records += CloudConfigRecord(
+                configKey = key,
+                ownerHwidHash = ownerHwidHash.uppercase(Locale.ROOT),
+                ownerLicenseKey = ownerLicenseKey,
+                name = name,
+                createdAt = now,
+                updatedAt = now,
+                disabled = false,
+                payloadBase64 = payloadBase64,
+            )
+            writeAll(records)
+            CloudConfigCreateResult.Created(key, used + 1)
+        }
+    }
+
+    fun findActive(key: String): CloudConfigRecord? {
+        return lock.read {
+            readAll().firstOrNull { it.configKey == key && !it.disabled }
+        }
+    }
+
+    fun deleteOwned(key: String, ownerHwidHash: String): Boolean {
+        return lock.write {
+            val records = readAll()
+            val owned = records.any {
+                it.configKey == key && it.ownerHwidHash.equals(ownerHwidHash, ignoreCase = true)
+            }
+            if (!owned) {
+                return@write false
+            }
+            writeAll(records.filterNot { it.configKey == key })
+            true
+        }
+    }
+
+    private fun readAll(): List<CloudConfigRecord> {
+        return file.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(CloudConfigRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<CloudConfigRecord>) {
+        val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
+        tmp.writeText(records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+        runCatching {
+            Files.move(
+                tmp,
+                file,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        }.getOrElse {
+            Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+}
+
+private sealed class CloudConfigCreateResult {
+    data class Created(val configKey: String, val used: Int) : CloudConfigCreateResult()
+    data class LimitReached(val used: Int) : CloudConfigCreateResult()
+}
+
+private data class CloudConfigRecord(
+    val configKey: String,
+    val ownerHwidHash: String,
+    val ownerLicenseKey: String?,
+    val name: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val disabled: Boolean,
+    val payloadBase64: String,
+) {
+    fun toLine(): String {
+        return listOf(
+            configKey,
+            ownerHwidHash,
+            ownerLicenseKey ?: "",
+            name,
+            createdAt,
+            updatedAt,
+            disabled.toString(),
+            payloadBase64,
+        ).joinToString("\t") { it.replace("\t", " ") }
+    }
+
+    companion object {
+        fun fromLine(line: String): CloudConfigRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 8) {
+                return null
+            }
+            return CloudConfigRecord(
+                configKey = parts[0],
+                ownerHwidHash = parts[1],
+                ownerLicenseKey = parts[2].ifBlank { null },
+                name = parts[3],
+                createdAt = parts[4],
+                updatedAt = parts[5],
+                disabled = parts[6].toBooleanStrictOrNull() ?: false,
+                payloadBase64 = parts[7],
+            )
+        }
+    }
+}
+
 private sealed class LicenseCheckResult {
     data class Valid(val role: String, val status: String, val expiresAt: String?) : LicenseCheckResult()
     data class Invalid(val reason: String) : LicenseCheckResult()
@@ -408,6 +547,101 @@ private fun checkLicense(exchange: HttpExchange, storage: LicenseStorage) {
 
     val result = storage.checkAndBind(license, hwidHash)
     json(exchange, 200, result.toJson())
+}
+
+private fun saveCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
+    if (exchange.requestMethod != "POST") {
+        return text(exchange, 405, "Method not allowed")
+    }
+
+    val body = exchange.bodyString()
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT)
+    val ownerLicenseKey = jsonString(body, "license")?.trim()?.uppercase(Locale.ROOT)
+        ?.takeIf { licenseRegex.matches(it) }
+    val name = jsonString(body, "name")?.trim()?.take(64)?.takeIf { it.isNotBlank() } ?: "Shared config"
+    val payloadBase64 = jsonString(body, "payloadBase64")?.trim()
+
+    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) {
+        return json(exchange, 200, cloudError("HWID_FORMAT"))
+    }
+    if (payloadBase64 == null) {
+        return json(exchange, 200, cloudError("PAYLOAD_MISSING"))
+    }
+
+    val payloadBytes = runCatching { java.util.Base64.getDecoder().decode(payloadBase64) }.getOrNull()
+    if (payloadBytes == null || payloadBytes.isEmpty()) {
+        return json(exchange, 200, cloudError("PAYLOAD_FORMAT"))
+    }
+    if (payloadBytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) {
+        return json(exchange, 200, cloudError("PAYLOAD_TOO_LARGE"))
+    }
+
+    val result = storage.create(
+        ownerHwidHash = hwidHash,
+        ownerLicenseKey = ownerLicenseKey,
+        name = name,
+        payloadBase64 = payloadBase64,
+    )
+
+    when (result) {
+        is CloudConfigCreateResult.Created -> {
+            json(
+                exchange,
+                200,
+                """{"ok":true,"configKey":"${result.configKey}","used":${result.used},"limit":$MAX_CLOUD_CONFIGS_PER_HWID}""",
+            )
+        }
+        is CloudConfigCreateResult.LimitReached -> {
+            json(exchange, 200, """{"ok":false,"status":"LIMIT_REACHED","used":${result.used},"limit":$MAX_CLOUD_CONFIGS_PER_HWID}""")
+        }
+    }
+}
+
+private fun loadCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
+    if (exchange.requestMethod != "POST") {
+        return text(exchange, 405, "Method not allowed")
+    }
+
+    val body = exchange.bodyString()
+    val key = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
+    if (key == null || !cloudConfigKeyRegex.matches(key)) {
+        return json(exchange, 200, cloudError("CONFIG_KEY_FORMAT"))
+    }
+
+    val record = storage.findActive(key)
+        ?: return json(exchange, 200, cloudError("CONFIG_NOT_FOUND"))
+
+    json(
+        exchange,
+        200,
+        """{"ok":true,"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","payloadBase64":"${jsonEscape(record.payloadBase64)}","updatedAt":"${record.updatedAt}"}""",
+    )
+}
+
+private fun deleteCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
+    if (exchange.requestMethod != "POST") {
+        return text(exchange, 405, "Method not allowed")
+    }
+
+    val body = exchange.bodyString()
+    val key = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT)
+    if (key == null || !cloudConfigKeyRegex.matches(key)) {
+        return json(exchange, 200, cloudError("CONFIG_KEY_FORMAT"))
+    }
+    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) {
+        return json(exchange, 200, cloudError("HWID_FORMAT"))
+    }
+
+    if (!storage.deleteOwned(key, hwidHash)) {
+        return json(exchange, 200, cloudError("CONFIG_NOT_FOUND"))
+    }
+
+    json(exchange, 200, """{"ok":true,"status":"DELETED"}""")
+}
+
+private fun cloudError(status: String): String {
+    return """{"ok":false,"status":"${jsonEscape(status)}"}"""
 }
 
 private fun LicenseCheckResult.toJson(): String {
@@ -447,6 +681,22 @@ private fun generateLicenseKey(): String {
             append(alphabet[random.nextInt(alphabet.length)])
         }
     }
+}
+
+private fun generateCloudConfigKey(existing: Set<String>): String {
+    val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    val random = SecureRandom()
+    repeat(100) {
+        val key = buildString(8) {
+            repeat(8) {
+                append(alphabet[random.nextInt(alphabet.length)])
+            }
+        }
+        if (key !in existing) {
+            return key
+        }
+    }
+    throw IllegalStateException("Could not generate unique cloud config key")
 }
 
 private fun splitArgs(line: String): List<String> {

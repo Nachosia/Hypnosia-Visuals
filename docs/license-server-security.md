@@ -36,6 +36,16 @@ Only this endpoint should be reachable by mod clients:
 POST /api/license/check
 ```
 
+Cloud config sharing endpoints may also be public:
+
+```text
+POST /api/cloud-config/save
+POST /api/cloud-config/load
+POST /api/cloud-config/delete
+```
+
+The admin panel must still remain localhost-only through the SSH tunnel.
+
 Request:
 
 ```json
