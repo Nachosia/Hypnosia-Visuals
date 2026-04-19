@@ -32,6 +32,14 @@ POST /api/license/check
 
 ## Console Commands
 
+Simple VPS menu:
+
+```bash
+hypnosia-menu
+```
+
+The menu wraps the common commands: create, list, show, role change, expiration change, HWID reset, disable, enable, delete, service status, logs, restart, and backup.
+
 Interactive mode:
 
 ```text
