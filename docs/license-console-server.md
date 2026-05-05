@@ -43,7 +43,7 @@ The menu wraps the common commands: create, list, show, role change, expiration 
 Local web panel through SSH tunnel:
 
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\hypnosia_codex" -L 9090:127.0.0.1:9090 root@2.26.0.174
+ssh -i "$env:USERPROFILE\.ssh\hypnosia_codex" -L 9090:127.0.0.1:9090 root@<VPS_IP>
 ```
 
 Then open:
@@ -80,7 +80,7 @@ Roles:
 
 ```text
 USER
-PREMIUM
+SPONSOR
 QA
 ADMIN
 OWNER
@@ -90,7 +90,7 @@ Examples:
 
 ```text
 create QA 2026-12-31
-create PREMIUM never
+create SPONSOR never
 list
 show ABCDEFGHJKLMNPQRSTUVWXYZ234567
 reset-hwid ABCDEFGHJKLMNPQRSTUVWXYZ234567
@@ -99,7 +99,7 @@ disable ABCDEFGHJKLMNPQRSTUVWXYZ234567
 
 ## Binding Logic
 
-- User stores only `license.key` in `config/hypnosia/license.properties`.
+- User stores only `license.key` in `.minecraft/hypnosia/license.properties`.
 - If the key has no HWID on the server, the first valid launch binds it.
 - Next launches must match the same HWID hash.
 - If the key is blank or missing locally, the mod does not call the server.

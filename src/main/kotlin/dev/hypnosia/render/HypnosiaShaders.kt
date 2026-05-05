@@ -11,6 +11,19 @@ import net.minecraft.client.render.VertexFormats
 import net.minecraft.util.Identifier
 
 object HypnosiaShaders {
+    val SDF_ROUNDED_RECT_OPAQUE: RenderPipeline = RenderPipelines.register(
+        RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
+            .withLocation(Identifier.of(HypnosiaClient.MOD_ID, "pipeline/sdf_rounded_rect_opaque"))
+            .withVertexShader(Identifier.of(HypnosiaClient.MOD_ID, "core/sdf_rounded_rect"))
+            .withFragmentShader(Identifier.of(HypnosiaClient.MOD_ID, "core/sdf_rounded_rect"))
+            .withUniform("HypnosiaBox", UniformType.UNIFORM_BUFFER)
+            .withVertexFormat(VertexFormats.POSITION_TEXTURE, VertexFormat.DrawMode.QUADS)
+            .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
+            .withDepthWrite(false)
+            .withCull(false)
+            .build(),
+    )
+
     val SDF_ROUNDED_RECT: RenderPipeline = RenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
             .withLocation(Identifier.of(HypnosiaClient.MOD_ID, "pipeline/sdf_rounded_rect"))

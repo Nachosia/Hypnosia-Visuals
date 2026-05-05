@@ -7,11 +7,12 @@ import net.minecraft.text.Style
 import net.minecraft.text.StyleSpriteSource
 import net.minecraft.text.Text
 import net.minecraft.util.Identifier
+import kotlin.math.round
 
 object FigmaTextRenderer {
     enum class Font(val id: Identifier, val baseSize: Float) {
         Main(Identifier.of(HypnosiaClient.MOD_ID, "main"), 12.0f),
-        Title(Identifier.of(HypnosiaClient.MOD_ID, "title"), 64.0f),
+        Title(Identifier.of(HypnosiaClient.MOD_ID, "title"), 12.0f),
     }
 
     enum class HorizontalAlign {
@@ -49,7 +50,7 @@ object FigmaTextRenderer {
         val Ui14 = FigmaTextStyle(Font.Main, 14.0f, 18.0f, baselineOffset = 1.0f)
         val Ui16 = FigmaTextStyle(Font.Main, 16.0f, 20.0f, baselineOffset = 2.0f)
         val Ui18 = FigmaTextStyle(Font.Main, 18.0f, 22.0f, baselineOffset = 2.0f)
-        val Helper = FigmaTextStyle(Font.Main, 6.0f, 25.0f)
+        val Helper = FigmaTextStyle(Font.Main, 9.0f, 12.0f, baselineOffset = 1.0f)
         val Chapter = FigmaTextStyle(Font.Main, 14.0f, 24.0f, baselineOffset = 1.0f)
         val Stats = FigmaTextStyle(Font.Main, 12.0f, 11.0f, baselineOffset = 1.0f)
         val HomeHeader = FigmaTextStyle(Font.Main, 12.0f, 18.0f, baselineOffset = 2.0f)
@@ -73,19 +74,18 @@ object FigmaTextRenderer {
         color: Int,
         font: Font = Font.Main,
     ) {
-        val scale = size / font.baseSize
-        context.matrices.pushMatrix()
-        context.matrices.translate(x, y)
-        context.matrices.scale(scale, scale)
-        context.drawText(
-            MinecraftClient.getInstance().textRenderer,
-            styled(text, font),
-            0,
-            0,
-            color,
-            false,
+        draw(
+            context = context,
+            text = text,
+            x = x,
+            y = y,
+            color = color,
+            style = FigmaTextStyle(
+                font = font,
+                size = size,
+                lineHeight = size * 1.2f,
+            ),
         )
-        context.matrices.popMatrix()
     }
 
     fun drawCentered(
@@ -139,20 +139,29 @@ object FigmaTextRenderer {
         verticalAlign: VerticalAlign = VerticalAlign.Top,
     ) {
         val textWidth = width(text, style)
-        val drawX = when (horizontalAlign) {
+        val drawXRaw = when (horizontalAlign) {
             HorizontalAlign.Left -> x
             HorizontalAlign.Center -> x + (width - textWidth) * 0.5f
             HorizontalAlign.Right -> x + width - textWidth
         }
-        val drawY = when (verticalAlign) {
+        val drawYRaw = when (verticalAlign) {
             VerticalAlign.Top -> y
             VerticalAlign.Center -> y + (height - style.lineHeight) * 0.5f
             VerticalAlign.Bottom -> y + height - style.lineHeight
         }
-        draw(context, text, drawX, drawY, color, style)
+        draw(context, text, drawXRaw, drawYRaw, color, style)
     }
 
     fun width(text: String, size: Float, font: Font = Font.Main): Float {
+        HighQualityTextRenderer.width(
+            text,
+            FigmaTextStyle(
+                font = font,
+                size = size,
+                lineHeight = size * 1.2f,
+            ),
+        )?.let { return it }
+
         val scale = size / font.baseSize
         return MinecraftClient.getInstance().textRenderer.getWidth(styled(text, font)) * scale
     }
@@ -176,21 +185,51 @@ object FigmaTextRenderer {
             return
         }
 
-        if (HighQualityTextRenderer.draw(context, text, x, y, color, style)) {
+        val drawX = snapHalf(x)
+        val drawY = snapHalf(y)
+
+        if (HighQualityTextRenderer.draw(context, text, drawX, drawY, color, style)) {
             return
         }
 
         if (style.letterSpacing == 0.0f) {
-            draw(context, text, x, y, style.size, color, style.font)
+            drawMinecraftFont(context, text, drawX, drawY, style.size, color, style.font)
             return
         }
 
-        var cursorX = x
+        var cursorX = drawX
         text.forEach { char ->
             val glyph = char.toString()
-            draw(context, glyph, cursorX, y, style.size, color, style.font)
+            drawMinecraftFont(context, glyph, snapHalf(cursorX), drawY, style.size, color, style.font)
             cursorX += width(glyph, style.size, style.font) + style.letterSpacing
         }
+    }
+
+    private fun snapHalf(value: Float): Float =
+        round(value * 2.0f) * 0.5f
+
+    private fun drawMinecraftFont(
+        context: DrawContext,
+        text: String,
+        x: Float,
+        y: Float,
+        size: Float,
+        color: Int,
+        font: Font,
+    ) {
+        val scale = size / font.baseSize
+        context.matrices.pushMatrix()
+        context.matrices.translate(x, y)
+        context.matrices.scale(scale, scale)
+        context.drawText(
+            MinecraftClient.getInstance().textRenderer,
+            styled(text, font),
+            0,
+            0,
+            color,
+            false,
+        )
+        context.matrices.popMatrix()
     }
 
     private fun styled(text: String, font: Font): Text {

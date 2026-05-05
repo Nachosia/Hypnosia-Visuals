@@ -7,6 +7,8 @@ import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.Click
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.screen.Screen
+import net.minecraft.client.input.CharInput
+import net.minecraft.client.input.KeyInput
 import net.minecraft.text.Text
 
 class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
@@ -15,8 +17,30 @@ class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
     private var figmaMouseX = 0.0f
     private var figmaMouseY = 0.0f
     private var lastFrameNanos = 0L
+    private var previousHudHidden = false
+    private var hudHiddenCaptured = false
 
     override fun shouldPause(): Boolean = false
+
+    override fun init() {
+        super.init()
+        val options = MinecraftClient.getInstance().options
+        if (!hudHiddenCaptured) {
+            previousHudHidden = options.hudHidden
+            hudHiddenCaptured = true
+        }
+        options.hudHidden = true
+    }
+
+    override fun removed() {
+        restoreHudHidden()
+        super.removed()
+    }
+
+    override fun close() {
+        restoreHudHidden()
+        super.close()
+    }
 
     override fun renderBackground(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
         // Keep the world crisp behind the custom SDF shell: no vanilla blur, panorama, or darkening.
@@ -49,6 +73,15 @@ class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
         return rootLayout.mouseClicked(click.x(), click.y(), click.button()) || super.mouseClicked(click, doubled)
     }
 
+    override fun mouseReleased(click: Click): Boolean {
+        return rootLayout.mouseReleased(click.x(), click.y(), click.button()) || super.mouseReleased(click)
+    }
+
+    override fun mouseDragged(click: Click, offsetX: Double, offsetY: Double): Boolean {
+        return rootLayout.mouseDragged(click.x(), click.y(), click.button(), offsetX, offsetY) ||
+            super.mouseDragged(click, offsetX, offsetY)
+    }
+
     override fun mouseScrolled(
         mouseX: Double,
         mouseY: Double,
@@ -59,5 +92,21 @@ class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
             super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)
     }
 
+    override fun keyPressed(input: KeyInput): Boolean {
+        return rootLayout.keyPressed(input.key, input.scancode, input.modifiers) || super.keyPressed(input)
+    }
+
+    override fun charTyped(input: CharInput): Boolean {
+        val text = input.asString()
+        return text.any { rootLayout.charTyped(it, input.modifiers) } || super.charTyped(input)
+    }
+
     fun figmaMousePosition(): Pair<Float, Float> = figmaMouseX to figmaMouseY
+
+    private fun restoreHudHidden() {
+        if (hudHiddenCaptured) {
+            MinecraftClient.getInstance().options.hudHidden = previousHudHidden
+            hudHiddenCaptured = false
+        }
+    }
 }

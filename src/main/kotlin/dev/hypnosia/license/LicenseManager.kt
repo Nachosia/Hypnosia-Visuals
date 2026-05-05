@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference
 object LicenseManager {
     // Public endpoint only. Never put admin tokens, database credentials, VPS
     // passwords, or signing private keys in the client mod.
-    private const val DEFAULT_API_URL = ""
+    private const val DEFAULT_API_URL = "https://api.nachosia.site"
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(4))
         .build()

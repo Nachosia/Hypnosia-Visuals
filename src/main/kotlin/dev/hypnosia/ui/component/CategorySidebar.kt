@@ -28,7 +28,7 @@ enum class HypnosiaCategory(
 }
 
 class CategorySidebar(
-    private val selectedCategory: () -> HypnosiaCategory,
+    private val selectedCategory: () -> HypnosiaCategory?,
     private val onCategorySelected: (HypnosiaCategory) -> Unit,
 ) : BaseUiNode(
     LayoutSpec(

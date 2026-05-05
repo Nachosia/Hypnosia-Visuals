@@ -15,6 +15,11 @@ run/
 .DS_Store
 Thumbs.db
 
+# Local agent / temporary output
+.claude/
+.tmp.driveupload/
+project_status.txtnpm
+
 # Logs / crash dumps
 *.log
 *.log.gz

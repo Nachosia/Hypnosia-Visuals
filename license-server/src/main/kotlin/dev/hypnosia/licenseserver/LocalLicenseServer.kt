@@ -11,8 +11,10 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
+import java.util.Base64
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -24,71 +26,109 @@ import kotlin.io.path.writeText
 
 private const val DEFAULT_HOST = "127.0.0.1"
 private const val DEFAULT_PORT = 8080
-private const val DEFAULT_DATA_FILE = "data/licenses.tsv"
+private const val DEFAULT_LICENSE_FILE = "data/licenses.tsv"
+private const val DEFAULT_ACCOUNT_FILE = "data/accounts.tsv"
+private const val DEFAULT_ACCOUNT_ROLE_LINK_FILE = "data/account-role-links.tsv"
 private const val DEFAULT_CLOUD_CONFIG_FILE = "data/cloud-configs.tsv"
-private const val MAX_CLOUD_CONFIGS_PER_HWID = 3
+private const val DEFAULT_PRESENCE_FILE = "data/account-presence.tsv"
+private const val DEFAULT_NOTIFICATION_FILE = "data/notifications.tsv"
+private const val DEFAULT_ROLE_SETTINGS_FILE = "data/role-settings.tsv"
+private const val DEFAULT_ROLE_ICON_DIR = "data/role-icons"
+private const val DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT = 3
+private const val SPONSOR_CLOUD_CONFIGS_PER_ACCOUNT = 15
+private const val STAFF_CLOUD_CONFIGS_PER_ACCOUNT = 100
+private const val DEFAULT_USER_CLOUD_COOLDOWN_SECONDS = 15
 private const val MAX_CLOUD_CONFIG_PAYLOAD_BYTES = 64 * 1024
-private val roles = setOf("USER", "PREMIUM", "QA", "ADMIN", "OWNER")
+private const val ONLINE_TTL_SECONDS = 90L
+
+private val defaultRoles = setOf("USER", "SPONSOR", "QA", "ADMIN", "OWNER")
+private val roleRegex = Regex("^[A-Z][A-Z0-9_]{1,31}$")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
+private val accountKeyRegex = Regex("^[A-Z0-9]{32}$")
 private val cloudConfigKeyRegex = Regex("^[A-Z0-9]{8}$")
 private val hwidHashRegex = Regex("^[A-Fa-f0-9]{64}$")
 
 fun main(args: Array<String>) {
     val host = env("HYPNOSIA_LICENSE_HOST") ?: DEFAULT_HOST
     val port = env("HYPNOSIA_LICENSE_PORT")?.toIntOrNull() ?: DEFAULT_PORT
-    val dataFile = Path.of(env("HYPNOSIA_LICENSE_DATA") ?: DEFAULT_DATA_FILE)
-    val cloudConfigFile = Path.of(env("HYPNOSIA_CLOUD_CONFIG_DATA") ?: DEFAULT_CLOUD_CONFIG_FILE)
 
-    val storage = LicenseStorage(dataFile)
-    val cloudConfigStorage = CloudConfigStorage(cloudConfigFile)
+    val state = ServerState(
+        licenses = LicenseStorage(Path.of(env("HYPNOSIA_LICENSE_DATA") ?: DEFAULT_LICENSE_FILE)),
+        accounts = AccountStorage(Path.of(env("HYPNOSIA_ACCOUNT_DATA") ?: DEFAULT_ACCOUNT_FILE)),
+        roleLinks = AccountRoleLinkStorage(Path.of(env("HYPNOSIA_ACCOUNT_ROLE_LINK_DATA") ?: DEFAULT_ACCOUNT_ROLE_LINK_FILE)),
+        cloudConfigs = CloudConfigStorage(Path.of(env("HYPNOSIA_CLOUD_CONFIG_DATA") ?: DEFAULT_CLOUD_CONFIG_FILE)),
+        presence = PresenceStorage(Path.of(env("HYPNOSIA_PRESENCE_DATA") ?: DEFAULT_PRESENCE_FILE)),
+        notifications = NotificationStorage(Path.of(env("HYPNOSIA_NOTIFICATION_DATA") ?: DEFAULT_NOTIFICATION_FILE)),
+        roleSettings = RoleSettingsStorage(Path.of(env("HYPNOSIA_ROLE_SETTINGS_DATA") ?: DEFAULT_ROLE_SETTINGS_FILE)),
+        roleIconDir = Path.of(env("HYPNOSIA_ROLE_ICON_DIR") ?: DEFAULT_ROLE_ICON_DIR),
+        rateLimiter = RequestRateLimiter(),
+    )
+    state.roleIconDir.createDirectories()
 
     if (args.isNotEmpty()) {
-        ConsoleAdmin(storage).execute(args.toList())
+        ConsoleAdmin(state).execute(args.toList())
         return
     }
 
     val server = HttpServer.create(InetSocketAddress(host, port), 0)
-    server.createContext("/api/license/check") { exchange -> checkLicense(exchange, storage) }
-    server.createContext("/api/cloud-config/save") { exchange -> saveCloudConfig(exchange, cloudConfigStorage) }
-    server.createContext("/api/cloud-config/load") { exchange -> loadCloudConfig(exchange, cloudConfigStorage) }
-    server.createContext("/api/cloud-config/delete") { exchange -> deleteCloudConfig(exchange, cloudConfigStorage) }
+    server.createContext("/api/license/check") { exchange -> checkLicense(exchange, state) }
+    server.createContext("/api/account/create") { exchange -> createAccount(exchange, state) }
+    server.createContext("/api/account/info") { exchange -> accountInfo(exchange, state) }
+    server.createContext("/api/account/set-name") { exchange -> setAccountName(exchange, state) }
+    server.createContext("/api/account/set-contact") { exchange -> setAccountContact(exchange, state) }
+    server.createContext("/api/account/apply-key") { exchange -> applyAccountKey(exchange, state) }
+    server.createContext("/api/cloud-config/save") { exchange -> saveCloudConfig(exchange, state) }
+    server.createContext("/api/cloud-config/load") { exchange -> loadCloudConfig(exchange, state) }
+    server.createContext("/api/cloud-config/delete") { exchange -> deleteCloudConfig(exchange, state) }
+    server.createContext("/api/cloud-config/list") { exchange -> listCloudConfigs(exchange, state) }
+    server.createContext("/api/session/online") { exchange -> sessionOnline(exchange, state) }
+    server.createContext("/api/session/offline") { exchange -> sessionOffline(exchange, state) }
+    server.createContext("/api/notifications/poll") { exchange -> pollNotifications(exchange, state) }
+    server.createContext("/api/role-icons/") { exchange -> roleIconAsset(exchange, state) }
     server.createContext("/health") { exchange -> json(exchange, 200, """{"ok":true}""") }
     server.executor = Executors.newFixedThreadPool(8)
     server.start()
 
     println("Hypnosia license server listening on http://$host:$port")
-    println("Data file: ${dataFile.toAbsolutePath()}")
+    println("License data: ${state.licenses.filePath.toAbsolutePath()}")
+    println("Account data: ${state.accounts.filePath.toAbsolutePath()}")
     println("Type 'help' for commands.")
 
-    Runtime.getRuntime().addShutdownHook(Thread {
-        server.stop(2)
-    })
+    Runtime.getRuntime().addShutdownHook(Thread { server.stop(2) })
 
     val consoleEnabled = env("HYPNOSIA_LICENSE_CONSOLE")
         ?.toBooleanStrictOrNull()
         ?: true
 
     if (consoleEnabled) {
-        ConsoleAdmin(storage).loop()
+        ConsoleAdmin(state).loop()
         server.stop(0)
     } else {
         CountDownLatch(1).await()
     }
 }
 
-private class ConsoleAdmin(private val storage: LicenseStorage) {
+private data class ServerState(
+    val licenses: LicenseStorage,
+    val accounts: AccountStorage,
+    val roleLinks: AccountRoleLinkStorage,
+    val cloudConfigs: CloudConfigStorage,
+    val presence: PresenceStorage,
+    val notifications: NotificationStorage,
+    val roleSettings: RoleSettingsStorage,
+    val roleIconDir: Path,
+    val rateLimiter: RequestRateLimiter,
+)
+
+private class ConsoleAdmin(private val state: ServerState) {
     fun loop() {
         while (true) {
             print("hypnosia-license> ")
             val line = readlnOrNull()?.trim() ?: break
-            if (line.isBlank()) {
-                continue
-            }
+            if (line.isBlank()) continue
 
             val args = splitArgs(line)
-            if (!execute(args)) {
-                return
-            }
+            if (!execute(args)) return
         }
     }
 
@@ -97,15 +137,18 @@ private class ConsoleAdmin(private val storage: LicenseStorage) {
         try {
             when (command) {
                 "help", "?" -> help()
-                "list", "ls" -> list()
-                "show" -> show(args)
-                "create", "new" -> create(args)
-                "role" -> role(args)
-                "expires", "expire" -> expires(args)
-                "disable" -> setDisabled(args, disabled = true)
-                "enable" -> setDisabled(args, disabled = false)
-                "reset", "reset-hwid" -> resetHwid(args)
-                "delete", "del", "remove" -> delete(args)
+                "list", "ls" -> listLicenses()
+                "show" -> showLicense(args)
+                "create", "new" -> createLicense(args)
+                "role" -> updateRole(args)
+                "expires", "expire" -> updateExpires(args)
+                "disable" -> setLicenseDisabled(args, disabled = true)
+                "enable" -> setLicenseDisabled(args, disabled = false)
+                "reset", "reset-hwid" -> resetLicenseHwid(args)
+                "delete", "del", "remove" -> deleteLicense(args)
+                "accounts", "account-list" -> listAccounts()
+                "account-show" -> showAccount(args)
+                "account-create" -> createAccount(args)
                 "exit", "quit", "stop" -> return false
                 else -> println("Unknown command '$command'. Type 'help'.")
             }
@@ -122,48 +165,46 @@ private class ConsoleAdmin(private val storage: LicenseStorage) {
         println(
             """
             Commands:
-              license-server <command> [args]
-
-            Interactive/server commands:
               list
-              show <key>
+              show <license-key>
               create <role> [YYYY-MM-DD|never] [custom-32-char-key]
-              role <key> <role>
-              expires <key> <YYYY-MM-DD|never>
-              disable <key>
-              enable <key>
-              reset-hwid <key>
-              delete <key>
+              role <license-key> <role>
+              expires <license-key> <YYYY-MM-DD|never>
+              disable <license-key>
+              enable <license-key>
+              reset-hwid <license-key>
+              delete <license-key>
+              accounts
+              account-show <account-id>
+              account-create <64-char-hwid-hash> [display-name]
               exit
 
-            Roles: ${roles.joinToString(", ")}
+            Default roles: ${defaultRoles.joinToString(", ")}
             """.trimIndent(),
         )
     }
 
-    private fun list() {
-        val records = storage.all()
+    private fun listLicenses() {
+        val records = state.licenses.all()
         if (records.isEmpty()) {
             println("No licenses.")
             return
         }
 
         records.forEach { record ->
-            val state = when {
+            val status = when {
                 record.disabled -> "disabled"
                 record.isExpired() -> "expired"
                 record.hwidHash == null -> "not-bound"
                 else -> "bound"
             }
-            println(
-                "${record.licenseKey} | ${record.role} | $state | expires=${record.expiresAt ?: "never"} | hwid=${record.hwidHash?.take(12) ?: "-"}",
-            )
+            println("${record.licenseKey} | ${record.role} | $status | expires=${record.expiresAt ?: "never"} | hwid=${record.hwidHash?.take(12) ?: "-"}")
         }
     }
 
-    private fun show(args: List<String>) {
-        val key = args.getKey(1)
-        val record = storage.find(key) ?: throw IllegalArgumentException("License not found")
+    private fun showLicense(args: List<String>) {
+        val key = args.getLicenseKey(1)
+        val record = state.licenses.find(key) ?: throw IllegalArgumentException("License not found")
         println("key       : ${record.licenseKey}")
         println("role      : ${record.role}")
         println("disabled  : ${record.disabled}")
@@ -173,13 +214,13 @@ private class ConsoleAdmin(private val storage: LicenseStorage) {
         println("hwidHash  : ${record.hwidHash ?: "-"}")
     }
 
-    private fun create(args: List<String>) {
+    private fun createLicense(args: List<String>) {
         val role = args.getOrNull(1)?.uppercaseRole() ?: throw IllegalArgumentException("Usage: create <role> [YYYY-MM-DD|never] [key]")
         val expiresAt = parseExpiresArgument(args.getOrNull(2))
-        val key = args.getOrNull(3)?.uppercase(Locale.ROOT) ?: generateLicenseKey()
+        val key = args.getOrNull(3)?.uppercase(Locale.ROOT) ?: generateKey(32)
         require(licenseRegex.matches(key)) { "License key must be 32 uppercase letters/digits" }
 
-        storage.create(
+        state.licenses.create(
             LicenseRecord(
                 licenseKey = key,
                 role = role,
@@ -193,68 +234,98 @@ private class ConsoleAdmin(private val storage: LicenseStorage) {
         println("Created: $key | role=$role | expires=${expiresAt ?: "never"}")
     }
 
-    private fun role(args: List<String>) {
-        val key = args.getKey(1)
+    private fun updateRole(args: List<String>) {
+        val key = args.getLicenseKey(1)
         val role = args.getOrNull(2)?.uppercaseRole() ?: throw IllegalArgumentException("Usage: role <key> <role>")
-        storage.updateExisting(key) { copy(role = role) }
+        state.licenses.updateExisting(key) { copy(role = role) }
         println("Updated role: $key -> $role")
     }
 
-    private fun expires(args: List<String>) {
-        val key = args.getKey(1)
+    private fun updateExpires(args: List<String>) {
+        val key = args.getLicenseKey(1)
         val expiresAt = parseExpiresArgument(args.getOrNull(2))
-        storage.updateExisting(key) { copy(expiresAt = expiresAt) }
+        state.licenses.updateExisting(key) { copy(expiresAt = expiresAt) }
         println("Updated expires: $key -> ${expiresAt ?: "never"}")
     }
 
-    private fun setDisabled(args: List<String>, disabled: Boolean) {
-        val key = args.getKey(1)
-        storage.updateExisting(key) { copy(disabled = disabled) }
+    private fun setLicenseDisabled(args: List<String>, disabled: Boolean) {
+        val key = args.getLicenseKey(1)
+        state.licenses.updateExisting(key) { copy(disabled = disabled) }
         println("${if (disabled) "Disabled" else "Enabled"}: $key")
     }
 
-    private fun resetHwid(args: List<String>) {
-        val key = args.getKey(1)
-        storage.updateExisting(key) { copy(hwidHash = null, boundAt = null) }
+    private fun resetLicenseHwid(args: List<String>) {
+        val key = args.getLicenseKey(1)
+        state.licenses.updateExisting(key) { copy(hwidHash = null, boundAt = null) }
+        state.roleLinks.unlinkLicense(key)
         println("HWID reset: $key")
     }
 
-    private fun delete(args: List<String>) {
-        val key = args.getKey(1)
-        storage.deleteExisting(key)
+    private fun deleteLicense(args: List<String>) {
+        val key = args.getLicenseKey(1)
+        state.licenses.deleteExisting(key)
+        state.roleLinks.unlinkLicense(key)
         println("Deleted: $key")
     }
 
-    private fun List<String>.getKey(index: Int): String {
-        val key = getOrNull(index)?.uppercase(Locale.ROOT)
-            ?: throw IllegalArgumentException("Missing license key")
+    private fun listAccounts() {
+        val accounts = state.accounts.all()
+        if (accounts.isEmpty()) {
+            println("No accounts.")
+            return
+        }
+        accounts.forEach { account ->
+            val roles = accountRoles(account, state).joinToString(", ")
+            println("#${account.id} | ${account.displayName ?: "-"} | ${if (account.disabled) "disabled" else "active"} | roles=$roles | hwid=${account.hwidHash.take(12)}")
+        }
+    }
+
+    private fun showAccount(args: List<String>) {
+        val id = args.getOrNull(1)?.toIntOrNull() ?: throw IllegalArgumentException("Usage: account-show <account-id>")
+        val account = state.accounts.findById(id) ?: throw IllegalArgumentException("Account not found")
+        println("id          : ${account.id}")
+        println("accountKey  : ${account.accountKey}")
+        println("displayName : ${account.displayName ?: "-"}")
+        println("disabled    : ${account.disabled}")
+        println("cloud ban   : ${account.cloudUploadBanned}")
+        println("created     : ${account.createdAt}")
+        println("hwidHash    : ${account.hwidHash}")
+        val roles = accountRoles(account, state)
+        println("roles       : ${roles.joinToString(", ")}")
+        println("cloud slots : ${state.cloudConfigs.usedSlots(account.id)}/${roleSettingsForRoles(roles, state).cloudLimit}")
+    }
+
+    private fun createAccount(args: List<String>) {
+        val hwidHash = args.getHwid(1)
+        val displayName = args.drop(2).joinToString(" ").trim().takeIf { it.isNotBlank() }
+        val account = state.accounts.createOrGetByHwid(hwidHash, displayName)
+        println("Account #${account.id}: key=${account.accountKey}")
+    }
+
+    private fun List<String>.getLicenseKey(index: Int): String {
+        val key = getOrNull(index)?.uppercase(Locale.ROOT) ?: throw IllegalArgumentException("Missing license key")
         require(licenseRegex.matches(key)) { "Invalid license key format" }
         return key
     }
 
-    private fun String.uppercaseRole(): String? {
-        val role = trim().uppercase(Locale.ROOT)
-        return role.takeIf { it in roles }
+    private fun List<String>.getHwid(index: Int): String {
+        val hwid = getOrNull(index)?.uppercase(Locale.ROOT) ?: throw IllegalArgumentException("Missing HWID hash")
+        require(hwidHashRegex.matches(hwid)) { "Invalid HWID hash" }
+        return hwid
     }
 }
 
-private class LicenseStorage(private val file: Path) {
+private class LicenseStorage(val filePath: Path) {
     private val lock = ReentrantReadWriteLock()
 
     init {
-        file.parent?.createDirectories()
-        if (!file.exists()) {
-            file.writeText("")
-        }
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
     }
 
-    fun all(): List<LicenseRecord> {
-        return lock.read { readAll().sortedByDescending { it.createdAt } }
-    }
+    fun all(): List<LicenseRecord> = lock.read { readAll().sortedByDescending { it.createdAt } }
 
-    fun find(key: String): LicenseRecord? {
-        return lock.read { readAll().firstOrNull { it.licenseKey == key } }
-    }
+    fun find(key: String): LicenseRecord? = lock.read { readAll().firstOrNull { it.licenseKey == key } }
 
     fun create(record: LicenseRecord) {
         lock.write {
@@ -293,30 +364,17 @@ private class LicenseStorage(private val file: Path) {
         return lock.write {
             val records = readAll().toMutableList()
             val index = records.indexOfFirst { it.licenseKey == key }
-            if (index == -1) {
-                return@write LicenseCheckResult.Invalid("LICENSE_NOT_FOUND")
-            }
+            if (index == -1) return@write LicenseCheckResult.Invalid("LICENSE_NOT_FOUND")
 
             val record = records[index]
-            if (record.disabled) {
-                return@write LicenseCheckResult.Invalid("LICENSE_DISABLED")
-            }
-            if (record.isExpired()) {
-                return@write LicenseCheckResult.Invalid("LICENSE_EXPIRED")
-            }
+            val invalid = record.invalidFor(hwidHash)
+            if (invalid != null) return@write LicenseCheckResult.Invalid(invalid)
 
             if (record.hwidHash == null) {
-                val updated = record.copy(
-                    hwidHash = hwidHash.uppercase(Locale.ROOT),
-                    boundAt = Instant.now().toString(),
-                )
+                val updated = record.copy(hwidHash = hwidHash.uppercase(Locale.ROOT), boundAt = Instant.now().toString())
                 records[index] = updated
                 writeAll(records)
                 return@write LicenseCheckResult.Valid(updated.role, "BOUND_NOW", updated.expiresAt)
-            }
-
-            if (!record.hwidHash.equals(hwidHash, ignoreCase = true)) {
-                return@write LicenseCheckResult.Invalid("HWID_MISMATCH")
             }
 
             LicenseCheckResult.Valid(record.role, "OK", record.expiresAt)
@@ -324,28 +382,411 @@ private class LicenseStorage(private val file: Path) {
     }
 
     private fun readAll(): List<LicenseRecord> {
-        return file.readLines(StandardCharsets.UTF_8)
+        return filePath.readLines(StandardCharsets.UTF_8)
             .filter { it.isNotBlank() }
             .mapNotNull(LicenseRecord::fromLine)
     }
 
     private fun writeAll(records: List<LicenseRecord>) {
-        val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
-        tmp.writeText(records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
-        runCatching {
-            Files.move(
-                tmp,
-                file,
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class AccountStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun all(): List<AccountRecord> = lock.read { readAll().sortedBy { it.id } }
+
+    fun findById(id: Int): AccountRecord? = lock.read { readAll().firstOrNull { it.id == id } }
+
+    fun findByKey(accountKey: String): AccountRecord? = lock.read { readAll().firstOrNull { it.accountKey == accountKey } }
+
+    fun findByHwid(hwidHash: String): AccountRecord? {
+        return lock.read { readAll().firstOrNull { it.hwidHash.equals(hwidHash, ignoreCase = true) } }
+    }
+
+    fun createOrGetByHwid(hwidHash: String, displayName: String? = null): AccountRecord {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val existing = records.firstOrNull { it.hwidHash.equals(hwidHash, ignoreCase = true) }
+            if (existing != null) {
+                if (!displayName.isNullOrBlank() && existing.displayName != displayName) {
+                    val updated = existing.copy(displayName = displayName)
+                    records[records.indexOf(existing)] = updated
+                    writeAll(records)
+                    return@write updated
+                }
+                return@write existing
+            }
+
+            val now = Instant.now().toString()
+            val usedKeys = records.asSequence().map { it.accountKey }.toSet()
+            val account = AccountRecord(
+                id = (records.maxOfOrNull { it.id } ?: 0) + 1,
+                accountKey = generateUniqueKey(32, usedKeys),
+                hwidHash = hwidHash.uppercase(Locale.ROOT),
+                displayName = displayName?.take(32)?.takeIf { it.isNotBlank() },
+                contact = null,
+                createdAt = now,
+                disabled = false,
+                cloudUploadBanned = false,
             )
-        }.getOrElse {
-            Files.move(
-                tmp,
-                file,
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-            )
+            records += account
+            writeAll(records)
+            account
         }
+    }
+
+    fun updateExisting(id: Int, transform: AccountRecord.() -> AccountRecord) {
+        lock.write {
+            var found = false
+            val records = readAll().map { account ->
+                if (account.id == id) {
+                    found = true
+                    account.transform()
+                } else {
+                    account
+                }
+            }
+            require(found) { "Account not found" }
+            writeAll(records)
+        }
+    }
+
+    fun bindHwidIfEmpty(accountId: Int, hwidHash: String): AccountRecord? {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.id == accountId }
+            if (index < 0) return@write null
+            val account = records[index]
+            if (account.hwidHash.isNotBlank()) return@write account
+            val updated = account.copy(hwidHash = hwidHash.uppercase(Locale.ROOT))
+            records[index] = updated
+            writeAll(records)
+            updated
+        }
+    }
+
+    private fun readAll(): List<AccountRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(AccountRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<AccountRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class AccountRoleLinkStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun all(): List<AccountRoleLinkRecord> = lock.read { readAll().exclusiveActiveLinks() }
+
+    fun linksForAccount(accountId: Int): List<AccountRoleLinkRecord> {
+        return lock.read { readAll().exclusiveActiveLinks().filter { it.accountId == accountId && !it.disabled } }
+    }
+
+    fun activeAccountIdForLicense(licenseKey: String): Int? {
+        return lock.read {
+            readAll()
+                .exclusiveActiveLinks()
+                .firstOrNull { it.licenseKey == licenseKey && !it.disabled }
+                ?.accountId
+        }
+    }
+
+    fun linkExclusive(accountId: Int, licenseKey: String) {
+        lock.write {
+            val records = readAll().toMutableList()
+            val existing = records.indexOfFirst { it.accountId == accountId && it.licenseKey == licenseKey }
+            for (index in records.indices) {
+                val record = records[index]
+                if (record.licenseKey == licenseKey && record.accountId != accountId && !record.disabled) {
+                    records[index] = record.copy(disabled = true)
+                }
+            }
+            if (existing >= 0) {
+                records[existing] = records[existing].copy(disabled = false)
+            } else {
+                records += AccountRoleLinkRecord(
+                    accountId = accountId,
+                    licenseKey = licenseKey,
+                    grantedAt = Instant.now().toString(),
+                    disabled = false,
+                )
+            }
+            writeAll(records)
+        }
+    }
+
+    fun unlinkLicense(licenseKey: String) {
+        lock.write {
+            val records = readAll().map { record ->
+                if (record.licenseKey == licenseKey) record.copy(disabled = true) else record
+            }
+            writeAll(records)
+        }
+    }
+
+    private fun readAll(): List<AccountRoleLinkRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(AccountRoleLinkRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<AccountRoleLinkRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class CloudConfigStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun all(): List<CloudConfigRecord> = lock.read { readAll().sortedByDescending { it.updatedAt } }
+
+    fun usedSlots(accountId: Int): Int {
+        return lock.read { readAll().count { it.ownerAccountId == accountId && !it.disabled } }
+    }
+
+    fun create(account: AccountRecord, ownerLicenseKey: String?, name: String, payloadBase64: String, limit: Int): CloudConfigCreateResult {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val used = records.count { it.ownerAccountId == account.id && !it.disabled }
+            if (used >= limit) {
+                return@write CloudConfigCreateResult.LimitReached(used, limit)
+            }
+
+            val now = Instant.now().toString()
+            val key = generateCloudConfigKey(records.asSequence().map { it.configKey }.toSet())
+            records += CloudConfigRecord(
+                configKey = key,
+                ownerAccountId = account.id,
+                ownerHwidHash = account.hwidHash,
+                ownerLicenseKey = ownerLicenseKey,
+                name = name,
+                createdAt = now,
+                updatedAt = now,
+                disabled = false,
+                payloadBase64 = payloadBase64,
+            )
+            writeAll(records)
+            CloudConfigCreateResult.Created(key, used + 1)
+        }
+    }
+
+    fun findActive(key: String): CloudConfigRecord? {
+        return lock.read { readAll().firstOrNull { it.configKey == key && !it.disabled } }
+    }
+
+    fun listOwned(accountId: Int): List<CloudConfigRecord> {
+        return lock.read { readAll().filter { it.ownerAccountId == accountId }.sortedByDescending { it.updatedAt } }
+    }
+
+    fun deleteOwned(accountId: Int, configKey: String): Boolean {
+        return lock.write {
+            val records = readAll()
+            val owned = records.any { it.configKey == configKey && it.ownerAccountId == accountId }
+            if (!owned) return@write false
+            writeAll(records.filterNot { it.configKey == configKey })
+            true
+        }
+    }
+
+    private fun readAll(): List<CloudConfigRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(CloudConfigRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<CloudConfigRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class RoleSettingsStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun all(): List<RoleSettingsRecord> = lock.read { readAll() }
+
+    fun find(role: String): RoleSettingsRecord? {
+        return lock.read { readAll().firstOrNull { it.role == role } }
+    }
+
+    fun upsert(record: RoleSettingsRecord) {
+        lock.write {
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.role == record.role }
+            if (index >= 0) {
+                records[index] = record
+            } else {
+                records += record
+            }
+            writeAll(records.sortedBy { it.role })
+        }
+    }
+
+    private fun readAll(): List<RoleSettingsRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(RoleSettingsRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<RoleSettingsRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class RequestRateLimiter {
+    private val lastAllowed = ConcurrentHashMap<String, Instant>()
+
+    fun check(bucket: String, cooldownSeconds: Int): RateLimitResult {
+        if (cooldownSeconds <= 0) return RateLimitResult.Allowed
+        val now = Instant.now()
+        while (true) {
+            val previous = lastAllowed[bucket]
+            if (previous != null) {
+                val nextAllowed = previous.plusSeconds(cooldownSeconds.toLong())
+                if (nextAllowed.isAfter(now)) {
+                    return RateLimitResult.Limited(nextAllowed.epochSecond - now.epochSecond)
+                }
+            }
+            if (previous == null) {
+                if (lastAllowed.putIfAbsent(bucket, now) == null) return RateLimitResult.Allowed
+            } else if (lastAllowed.replace(bucket, previous, now)) {
+                return RateLimitResult.Allowed
+            }
+        }
+    }
+}
+
+private class PresenceStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun markOnline(account: AccountRecord, displayName: String?) {
+        lock.write {
+            val now = Instant.now().toString()
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.accountId == account.id }
+            val updated = PresenceRecord(
+                accountId = account.id,
+                hwidHash = account.hwidHash,
+                displayName = displayName?.take(32)?.takeIf { it.isNotBlank() } ?: account.displayName,
+                online = true,
+                onlineSince = records.getOrNull(index)?.onlineSince ?: now,
+                lastSeenAt = now,
+                offlineAt = null,
+            )
+            if (index >= 0) records[index] = updated else records += updated
+            writeAll(records)
+        }
+    }
+
+    fun touch(account: AccountRecord) {
+        lock.write {
+            val now = Instant.now().toString()
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.accountId == account.id }
+            if (index < 0) {
+                records += PresenceRecord(account.id, account.hwidHash, account.displayName, true, now, now, null)
+            } else {
+                records[index] = records[index].copy(online = true, lastSeenAt = now, offlineAt = null)
+            }
+            writeAll(records)
+        }
+    }
+
+    fun markOffline(account: AccountRecord) {
+        lock.write {
+            val now = Instant.now().toString()
+            val records = readAll().map { record ->
+                if (record.accountId == account.id) record.copy(online = false, lastSeenAt = now, offlineAt = now) else record
+            }
+            writeAll(records)
+        }
+    }
+
+    fun onlineAccountIds(now: Instant = Instant.now()): Set<Int> {
+        return lock.read {
+            readAll()
+                .asSequence()
+                .filter { it.isOnline(now) }
+                .map { it.accountId }
+                .toSet()
+        }
+    }
+
+    private fun readAll(): List<PresenceRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(PresenceRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<PresenceRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
+    }
+}
+
+private class NotificationStorage(val filePath: Path) {
+    private val lock = ReentrantReadWriteLock()
+
+    init {
+        filePath.parent?.createDirectories()
+        if (!filePath.exists()) filePath.writeText("")
+    }
+
+    fun pendingFor(accountId: Int): List<NotificationRecord> {
+        return lock.read {
+            readAll()
+                .filter { it.accountId == accountId && it.deliveredAt == null }
+                .sortedBy { it.createdAt }
+        }
+    }
+
+    fun markDelivered(ids: Set<Long>) {
+        if (ids.isEmpty()) return
+        lock.write {
+            val now = Instant.now().toString()
+            val records = readAll().map { record ->
+                if (record.id in ids && record.deliveredAt == null) record.copy(deliveredAt = now) else record
+            }
+            writeAll(records)
+        }
+    }
+
+    private fun readAll(): List<NotificationRecord> {
+        return filePath.readLines(StandardCharsets.UTF_8)
+            .filter { it.isNotBlank() }
+            .mapNotNull(NotificationRecord::fromLine)
+    }
+
+    private fun writeAll(records: List<NotificationRecord>) {
+        atomicWrite(filePath, records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
     }
 }
 
@@ -363,6 +804,18 @@ private data class LicenseRecord(
         return runCatching { Instant.parse(expires).isBefore(Instant.now()) }.getOrDefault(false)
     }
 
+    fun invalidFor(hwidHash: String): String? {
+        if (disabled) return "LICENSE_DISABLED"
+        if (isExpired()) return "LICENSE_EXPIRED"
+        val bound = this.hwidHash
+        if (bound != null && !bound.equals(hwidHash, ignoreCase = true)) return "HWID_MISMATCH"
+        return null
+    }
+
+    fun activeFor(hwidHash: String): Boolean {
+        return invalidFor(hwidHash) == null && this.hwidHash != null
+    }
+
     fun toLine(): String {
         return listOf(
             licenseKey,
@@ -372,15 +825,13 @@ private data class LicenseRecord(
             boundAt ?: "",
             expiresAt ?: "",
             disabled.toString(),
-        ).joinToString("\t") { it.replace("\t", " ") }
+        ).joinToString("\t") { it.tsv() }
     }
 
     companion object {
         fun fromLine(line: String): LicenseRecord? {
             val parts = line.split('\t')
-            if (parts.size < 7) {
-                return null
-            }
+            if (parts.size < 7) return null
             return LicenseRecord(
                 licenseKey = parts[0],
                 role = parts[1],
@@ -394,95 +845,74 @@ private data class LicenseRecord(
     }
 }
 
-private class CloudConfigStorage(private val file: Path) {
-    private val lock = ReentrantReadWriteLock()
-
-    init {
-        file.parent?.createDirectories()
-        if (!file.exists()) {
-            file.writeText("")
-        }
+private data class AccountRecord(
+    val id: Int,
+    val accountKey: String,
+    val hwidHash: String,
+    val displayName: String?,
+    val contact: String?,
+    val createdAt: String,
+    val disabled: Boolean,
+    val cloudUploadBanned: Boolean,
+) {
+    fun toLine(): String {
+        return listOf(
+            id.toString(),
+            accountKey,
+            hwidHash,
+            displayName ?: "",
+            contact ?: "",
+            createdAt,
+            disabled.toString(),
+            cloudUploadBanned.toString(),
+        ).joinToString("\t") { it.tsv() }
     }
 
-    fun create(
-        ownerHwidHash: String,
-        ownerLicenseKey: String?,
-        name: String,
-        payloadBase64: String,
-    ): CloudConfigCreateResult {
-        return lock.write {
-            val records = readAll().toMutableList()
-            val used = records.count { it.ownerHwidHash.equals(ownerHwidHash, ignoreCase = true) && !it.disabled }
-            if (used >= MAX_CLOUD_CONFIGS_PER_HWID) {
-                return@write CloudConfigCreateResult.LimitReached(used)
-            }
-
-            val now = Instant.now().toString()
-            val key = generateCloudConfigKey(records.asSequence().map { it.configKey }.toSet())
-            records += CloudConfigRecord(
-                configKey = key,
-                ownerHwidHash = ownerHwidHash.uppercase(Locale.ROOT),
-                ownerLicenseKey = ownerLicenseKey,
-                name = name,
-                createdAt = now,
-                updatedAt = now,
-                disabled = false,
-                payloadBase64 = payloadBase64,
+    companion object {
+        fun fromLine(line: String): AccountRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 6) return null
+            return AccountRecord(
+                id = parts[0].toIntOrNull() ?: return null,
+                accountKey = parts[1],
+                hwidHash = parts[2],
+                displayName = parts[3].ifBlank { null },
+                contact = if (parts.size >= 7) parts[4].ifBlank { null } else null,
+                createdAt = if (parts.size >= 7) parts[5] else parts[4],
+                disabled = (if (parts.size >= 7) parts[6] else parts[5]).toBooleanStrictOrNull() ?: false,
+                cloudUploadBanned = if (parts.size >= 8) parts[7].toBooleanStrictOrNull() ?: false else false,
             )
-            writeAll(records)
-            CloudConfigCreateResult.Created(key, used + 1)
-        }
-    }
-
-    fun findActive(key: String): CloudConfigRecord? {
-        return lock.read {
-            readAll().firstOrNull { it.configKey == key && !it.disabled }
-        }
-    }
-
-    fun deleteOwned(key: String, ownerHwidHash: String): Boolean {
-        return lock.write {
-            val records = readAll()
-            val owned = records.any {
-                it.configKey == key && it.ownerHwidHash.equals(ownerHwidHash, ignoreCase = true)
-            }
-            if (!owned) {
-                return@write false
-            }
-            writeAll(records.filterNot { it.configKey == key })
-            true
-        }
-    }
-
-    private fun readAll(): List<CloudConfigRecord> {
-        return file.readLines(StandardCharsets.UTF_8)
-            .filter { it.isNotBlank() }
-            .mapNotNull(CloudConfigRecord::fromLine)
-    }
-
-    private fun writeAll(records: List<CloudConfigRecord>) {
-        val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
-        tmp.writeText(records.joinToString("\n") { it.toLine() } + if (records.isEmpty()) "" else "\n")
-        runCatching {
-            Files.move(
-                tmp,
-                file,
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-            )
-        }.getOrElse {
-            Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         }
     }
 }
 
-private sealed class CloudConfigCreateResult {
-    data class Created(val configKey: String, val used: Int) : CloudConfigCreateResult()
-    data class LimitReached(val used: Int) : CloudConfigCreateResult()
+private data class AccountRoleLinkRecord(
+    val accountId: Int,
+    val licenseKey: String,
+    val grantedAt: String,
+    val disabled: Boolean,
+) {
+    fun toLine(): String {
+        return listOf(accountId.toString(), licenseKey, grantedAt, disabled.toString()).joinToString("\t") { it.tsv() }
+    }
+
+    companion object {
+        fun fromLine(line: String): AccountRoleLinkRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 4) return null
+            return AccountRoleLinkRecord(
+                accountId = parts[0].toIntOrNull() ?: return null,
+                licenseKey = parts[1],
+                grantedAt = parts[2],
+                disabled = parts[3].toBooleanStrictOrNull() ?: false,
+            )
+        }
+    }
 }
 
 private data class CloudConfigRecord(
     val configKey: String,
+    val ownerAccountId: Int?,
     val ownerHwidHash: String,
     val ownerLicenseKey: String?,
     val name: String,
@@ -494,6 +924,7 @@ private data class CloudConfigRecord(
     fun toLine(): String {
         return listOf(
             configKey,
+            ownerAccountId?.toString() ?: "",
             ownerHwidHash,
             ownerLicenseKey ?: "",
             name,
@@ -501,24 +932,155 @@ private data class CloudConfigRecord(
             updatedAt,
             disabled.toString(),
             payloadBase64,
-        ).joinToString("\t") { it.replace("\t", " ") }
+        ).joinToString("\t") { it.tsv() }
     }
 
     companion object {
         fun fromLine(line: String): CloudConfigRecord? {
             val parts = line.split('\t')
-            if (parts.size < 8) {
-                return null
+            if (parts.size >= 9) {
+                return CloudConfigRecord(
+                    configKey = parts[0],
+                    ownerAccountId = parts[1].toIntOrNull(),
+                    ownerHwidHash = parts[2],
+                    ownerLicenseKey = parts[3].ifBlank { null },
+                    name = parts[4],
+                    createdAt = parts[5],
+                    updatedAt = parts[6],
+                    disabled = parts[7].toBooleanStrictOrNull() ?: false,
+                    payloadBase64 = parts[8],
+                )
             }
-            return CloudConfigRecord(
-                configKey = parts[0],
-                ownerHwidHash = parts[1],
-                ownerLicenseKey = parts[2].ifBlank { null },
-                name = parts[3],
-                createdAt = parts[4],
-                updatedAt = parts[5],
-                disabled = parts[6].toBooleanStrictOrNull() ?: false,
-                payloadBase64 = parts[7],
+            if (parts.size >= 8) {
+                return CloudConfigRecord(
+                    configKey = parts[0],
+                    ownerAccountId = null,
+                    ownerHwidHash = parts[1],
+                    ownerLicenseKey = parts[2].ifBlank { null },
+                    name = parts[3],
+                    createdAt = parts[4],
+                    updatedAt = parts[5],
+                    disabled = parts[6].toBooleanStrictOrNull() ?: false,
+                    payloadBase64 = parts[7],
+                )
+            }
+            return null
+        }
+    }
+}
+
+private data class RoleSettingsRecord(
+    val role: String,
+    val cloudLimit: Int,
+    val saveCooldownSeconds: Int,
+    val loadCooldownSeconds: Int,
+) {
+    fun toLine(): String {
+        return listOf(
+            role,
+            cloudLimit.toString(),
+            saveCooldownSeconds.toString(),
+            loadCooldownSeconds.toString(),
+        ).joinToString("\t") { it.tsv() }
+    }
+
+    companion object {
+        fun fromLine(line: String): RoleSettingsRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 4) return null
+            val role = parts[0].uppercaseRole() ?: return null
+            return RoleSettingsRecord(
+                role = role,
+                cloudLimit = parts[1].toIntOrNull()?.coerceIn(0, 1000) ?: return null,
+                saveCooldownSeconds = parts[2].toIntOrNull()?.coerceIn(0, 3600) ?: return null,
+                loadCooldownSeconds = parts[3].toIntOrNull()?.coerceIn(0, 3600) ?: return null,
+            )
+        }
+    }
+}
+
+private data class RoleRuntimeSettings(
+    val cloudLimit: Int,
+    val saveCooldownSeconds: Int,
+    val loadCooldownSeconds: Int,
+)
+
+private sealed interface RateLimitResult {
+    data object Allowed : RateLimitResult
+    data class Limited(val retryAfterSeconds: Long) : RateLimitResult
+}
+
+private data class PresenceRecord(
+    val accountId: Int,
+    val hwidHash: String,
+    val displayName: String?,
+    val online: Boolean,
+    val onlineSince: String,
+    val lastSeenAt: String,
+    val offlineAt: String?,
+) {
+    fun isOnline(now: Instant): Boolean {
+        if (!online) return false
+        val lastSeen = runCatching { Instant.parse(lastSeenAt) }.getOrNull() ?: return false
+        return !lastSeen.plusSeconds(ONLINE_TTL_SECONDS).isBefore(now)
+    }
+
+    fun toLine(): String {
+        return listOf(
+            accountId.toString(),
+            hwidHash,
+            displayName ?: "",
+            online.toString(),
+            onlineSince,
+            lastSeenAt,
+            offlineAt ?: "",
+        ).joinToString("\t") { it.tsv() }
+    }
+
+    companion object {
+        fun fromLine(line: String): PresenceRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 7) return null
+            return PresenceRecord(
+                accountId = parts[0].toIntOrNull() ?: return null,
+                hwidHash = parts[1],
+                displayName = parts[2].ifBlank { null },
+                online = parts[3].toBooleanStrictOrNull() ?: false,
+                onlineSince = parts[4],
+                lastSeenAt = parts[5],
+                offlineAt = parts[6].ifBlank { null },
+            )
+        }
+    }
+}
+
+private data class NotificationRecord(
+    val id: Long,
+    val accountId: Int,
+    val message: String,
+    val createdAt: String,
+    val deliveredAt: String?,
+) {
+    fun toLine(): String {
+        return listOf(
+            id.toString(),
+            accountId.toString(),
+            message,
+            createdAt,
+            deliveredAt ?: "",
+        ).joinToString("\t") { it.tsv() }
+    }
+
+    companion object {
+        fun fromLine(line: String): NotificationRecord? {
+            val parts = line.split('\t')
+            if (parts.size < 5) return null
+            return NotificationRecord(
+                id = parts[0].toLongOrNull() ?: return null,
+                accountId = parts[1].toIntOrNull() ?: return null,
+                message = parts[2],
+                createdAt = parts[3],
+                deliveredAt = parts[4].ifBlank { null },
             )
         }
     }
@@ -529,88 +1091,143 @@ private sealed class LicenseCheckResult {
     data class Invalid(val reason: String) : LicenseCheckResult()
 }
 
-private fun checkLicense(exchange: HttpExchange, storage: LicenseStorage) {
-    if (exchange.requestMethod != "POST") {
-        return text(exchange, 405, "Method not allowed")
-    }
+private sealed class CloudConfigCreateResult {
+    data class Created(val configKey: String, val used: Int) : CloudConfigCreateResult()
+    data class LimitReached(val used: Int, val limit: Int) : CloudConfigCreateResult()
+}
+
+private fun checkLicense(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
     val body = exchange.bodyString()
     val license = jsonString(body, "license")?.trim()?.uppercase(Locale.ROOT)
-    val hwidHash = jsonString(body, "hwidHash")?.trim()
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT)
 
-    if (license == null || !licenseRegex.matches(license)) {
-        return json(exchange, 200, invalidJson("LICENSE_FORMAT"))
-    }
-    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) {
-        return json(exchange, 200, invalidJson("HWID_FORMAT"))
-    }
+    if (license == null || !licenseRegex.matches(license)) return json(exchange, 200, invalidJson("LICENSE_FORMAT"))
+    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) return json(exchange, 200, invalidJson("HWID_FORMAT"))
 
-    val result = storage.checkAndBind(license, hwidHash)
-    json(exchange, 200, result.toJson())
+    json(exchange, 200, state.licenses.checkAndBind(license, hwidHash).toJson())
 }
 
-private fun saveCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
-    if (exchange.requestMethod != "POST") {
-        return text(exchange, 405, "Method not allowed")
-    }
+private fun createAccount(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
     val body = exchange.bodyString()
     val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT)
-    val ownerLicenseKey = jsonString(body, "license")?.trim()?.uppercase(Locale.ROOT)
-        ?.takeIf { licenseRegex.matches(it) }
+    val displayName = jsonString(body, "displayName")?.trim()?.take(32)?.takeIf { it.isNotBlank() }
+    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) return json(exchange, 200, apiError("HWID_FORMAT"))
+
+    val account = state.accounts.createOrGetByHwid(hwidHash, displayName)
+    json(exchange, 200, accountPayload(account, state, "OK"))
+}
+
+private fun accountInfo(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val account = requireAccount(exchange.bodyString(), state)
+        ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+
+    json(exchange, 200, accountPayload(account, state, "OK"))
+}
+
+private fun setAccountName(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    val displayName = jsonString(body, "displayName")?.trim()?.take(32)?.takeIf { it.isNotBlank() }
+    state.accounts.updateExisting(account.id) { copy(displayName = displayName) }
+    val updated = state.accounts.findById(account.id) ?: account.copy(displayName = displayName)
+    json(exchange, 200, accountPayload(updated, state, "NAME_UPDATED"))
+}
+
+private fun setAccountContact(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    val contact = jsonString(body, "contact")?.trim()?.take(96)?.takeIf { it.isNotBlank() }
+    state.accounts.updateExisting(account.id) { copy(contact = contact) }
+    val updated = state.accounts.findById(account.id) ?: account.copy(contact = contact)
+    json(exchange, 200, accountPayload(updated, state, "CONTACT_UPDATED"))
+}
+
+private fun applyAccountKey(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    val licenseKey = jsonString(body, "licenseKey")?.trim()?.uppercase(Locale.ROOT)
+    if (licenseKey == null || !licenseRegex.matches(licenseKey)) return json(exchange, 200, apiError("LICENSE_FORMAT"))
+
+    val boundAccountId = state.roleLinks.activeAccountIdForLicense(licenseKey)
+    if (boundAccountId != null && boundAccountId != account.id) {
+        return json(exchange, 200, apiError("LICENSE_ACCOUNT_BOUND"))
+    }
+
+    val result = state.licenses.checkAndBind(licenseKey, account.hwidHash)
+    when (result) {
+        is LicenseCheckResult.Valid -> {
+            state.roleLinks.linkExclusive(account.id, licenseKey)
+            json(exchange, 200, accountPayload(account, state, result.status))
+        }
+        is LicenseCheckResult.Invalid -> json(exchange, 200, apiError(result.reason))
+    }
+}
+
+private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = accountFromBodyOrCreate(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    if (account.cloudUploadBanned) return json(exchange, 200, apiError("CLOUD_UPLOAD_BANNED"))
+    val ownerLicenseKey = jsonString(body, "license")?.trim()?.uppercase(Locale.ROOT)?.takeIf { licenseRegex.matches(it) }
     val name = jsonString(body, "name")?.trim()?.take(64)?.takeIf { it.isNotBlank() } ?: "Shared config"
     val payloadBase64 = jsonString(body, "payloadBase64")?.trim()
+    if (payloadBase64 == null) return json(exchange, 200, apiError("PAYLOAD_MISSING"))
 
-    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) {
-        return json(exchange, 200, cloudError("HWID_FORMAT"))
-    }
-    if (payloadBase64 == null) {
-        return json(exchange, 200, cloudError("PAYLOAD_MISSING"))
-    }
+    val payloadBytes = runCatching { Base64.getDecoder().decode(payloadBase64) }.getOrNull()
+    if (payloadBytes == null || payloadBytes.isEmpty()) return json(exchange, 200, apiError("PAYLOAD_FORMAT"))
+    if (payloadBytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) return json(exchange, 200, apiError("PAYLOAD_TOO_LARGE"))
 
-    val payloadBytes = runCatching { java.util.Base64.getDecoder().decode(payloadBase64) }.getOrNull()
-    if (payloadBytes == null || payloadBytes.isEmpty()) {
-        return json(exchange, 200, cloudError("PAYLOAD_FORMAT"))
+    val roles = accountRoles(account, state)
+    val roleSettings = roleSettingsForRoles(roles, state)
+    when (val limit = state.rateLimiter.check("cloud-save:${account.id}", roleSettings.saveCooldownSeconds)) {
+        is RateLimitResult.Limited -> return json(exchange, 200, rateLimitJson(limit.retryAfterSeconds))
+        RateLimitResult.Allowed -> Unit
     }
-    if (payloadBytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) {
-        return json(exchange, 200, cloudError("PAYLOAD_TOO_LARGE"))
-    }
-
-    val result = storage.create(
-        ownerHwidHash = hwidHash,
-        ownerLicenseKey = ownerLicenseKey,
-        name = name,
-        payloadBase64 = payloadBase64,
-    )
-
-    when (result) {
+    when (val result = state.cloudConfigs.create(account, ownerLicenseKey, name, payloadBase64, roleSettings.cloudLimit)) {
         is CloudConfigCreateResult.Created -> {
             json(
                 exchange,
                 200,
-                """{"ok":true,"configKey":"${result.configKey}","used":${result.used},"limit":$MAX_CLOUD_CONFIGS_PER_HWID}""",
+                """{"ok":true,"status":"CREATED","accountId":${account.id},"accountKey":"${account.accountKey}","configKey":"${result.configKey}","used":${result.used},"limit":${roleSettings.cloudLimit}}""",
             )
         }
         is CloudConfigCreateResult.LimitReached -> {
-            json(exchange, 200, """{"ok":false,"status":"LIMIT_REACHED","used":${result.used},"limit":$MAX_CLOUD_CONFIGS_PER_HWID}""")
+            json(exchange, 200, """{"ok":false,"status":"LIMIT_REACHED","used":${result.used},"limit":${result.limit}}""")
         }
     }
 }
 
-private fun loadCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
-    if (exchange.requestMethod != "POST") {
-        return text(exchange, 405, "Method not allowed")
-    }
+private fun loadCloudConfig(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
     val body = exchange.bodyString()
     val key = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
-    if (key == null || !cloudConfigKeyRegex.matches(key)) {
-        return json(exchange, 200, cloudError("CONFIG_KEY_FORMAT"))
+    if (key == null || !cloudConfigKeyRegex.matches(key)) return json(exchange, 200, apiError("CONFIG_KEY_FORMAT"))
+
+    val account = accountFromBodyIfPresent(body, state)
+    val roles = account?.let { accountRoles(it, state) } ?: listOf("USER")
+    val roleSettings = roleSettingsForRoles(roles, state)
+    val bucket = account?.let { "cloud-load:${it.id}" }
+        ?: "cloud-load:ip:${exchange.remoteAddress.address.hostAddress}"
+    when (val limit = state.rateLimiter.check(bucket, roleSettings.loadCooldownSeconds)) {
+        is RateLimitResult.Limited -> return json(exchange, 200, rateLimitJson(limit.retryAfterSeconds))
+        RateLimitResult.Allowed -> Unit
     }
 
-    val record = storage.findActive(key)
-        ?: return json(exchange, 200, cloudError("CONFIG_NOT_FOUND"))
-
+    val record = state.cloudConfigs.findActive(key) ?: return json(exchange, 200, apiError("CONFIG_NOT_FOUND"))
     json(
         exchange,
         200,
@@ -618,85 +1235,275 @@ private fun loadCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage)
     )
 }
 
-private fun deleteCloudConfig(exchange: HttpExchange, storage: CloudConfigStorage) {
-    if (exchange.requestMethod != "POST") {
-        return text(exchange, 405, "Method not allowed")
-    }
+private fun deleteCloudConfig(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
     val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
     val key = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
-    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT)
-    if (key == null || !cloudConfigKeyRegex.matches(key)) {
-        return json(exchange, 200, cloudError("CONFIG_KEY_FORMAT"))
-    }
-    if (hwidHash == null || !hwidHashRegex.matches(hwidHash)) {
-        return json(exchange, 200, cloudError("HWID_FORMAT"))
-    }
+    if (key == null || !cloudConfigKeyRegex.matches(key)) return json(exchange, 200, apiError("CONFIG_KEY_FORMAT"))
 
-    if (!storage.deleteOwned(key, hwidHash)) {
-        return json(exchange, 200, cloudError("CONFIG_NOT_FOUND"))
-    }
-
+    if (!state.cloudConfigs.deleteOwned(account.id, key)) return json(exchange, 200, apiError("CONFIG_NOT_FOUND"))
     json(exchange, 200, """{"ok":true,"status":"DELETED"}""")
 }
 
-private fun cloudError(status: String): String {
-    return """{"ok":false,"status":"${jsonEscape(status)}"}"""
+private fun listCloudConfigs(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val account = requireAccount(exchange.bodyString(), state)
+        ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    val configs = state.cloudConfigs.listOwned(account.id)
+    val used = configs.count { !it.disabled }
+    val roleSettings = roleSettingsForRoles(accountRoles(account, state), state)
+    val items = configs.joinToString(",") { record ->
+        """{"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","disabled":${record.disabled},"updatedAt":"${record.updatedAt}"}"""
+    }
+    json(exchange, 200, """{"ok":true,"used":$used,"limit":${roleSettings.cloudLimit},"configs":[$items]}""")
+}
+
+private fun sessionOnline(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    val displayName = jsonString(body, "displayName")?.trim()?.take(32)?.takeIf { it.isNotBlank() }
+    state.presence.markOnline(account, displayName)
+    json(exchange, 200, """{"ok":true,"status":"ONLINE"}""")
+}
+
+private fun sessionOffline(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val account = requireAccount(exchange.bodyString(), state)
+        ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    state.presence.markOffline(account)
+    json(exchange, 200, """{"ok":true,"status":"OFFLINE"}""")
+}
+
+private fun pollNotifications(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val account = requireAccount(exchange.bodyString(), state)
+        ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    state.presence.touch(account)
+    val pending = state.notifications.pendingFor(account.id)
+    state.notifications.markDelivered(pending.map { it.id }.toSet())
+    val items = pending.joinToString(",") { record ->
+        """{"id":${record.id},"message":"${jsonEscape(record.message)}","createdAt":"${record.createdAt}"}"""
+    }
+    json(exchange, 200, """{"ok":true,"notifications":[$items]}""")
+}
+
+private fun requireAccount(body: String, state: ServerState): AccountRecord? {
+    val accountKey = jsonString(body, "accountKey")?.trim()?.uppercase(Locale.ROOT) ?: return null
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT) ?: return null
+    if (!accountKeyRegex.matches(accountKey) || !hwidHashRegex.matches(hwidHash)) return null
+    val account = state.accounts.findByKey(accountKey) ?: return null
+    if (account.disabled) return null
+    if (account.hwidHash.isBlank()) return state.accounts.bindHwidIfEmpty(account.id, hwidHash)
+    if (!account.hwidHash.equals(hwidHash, ignoreCase = true)) return null
+    return account
+}
+
+private fun accountFromBodyOrCreate(body: String, state: ServerState): AccountRecord? {
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT) ?: return null
+    if (!hwidHashRegex.matches(hwidHash)) return null
+
+    val accountKey = jsonString(body, "accountKey")?.trim()?.uppercase(Locale.ROOT)
+    if (!accountKey.isNullOrBlank()) {
+        if (!accountKeyRegex.matches(accountKey)) return null
+        val account = state.accounts.findByKey(accountKey) ?: return null
+        if (account.disabled) return null
+        if (account.hwidHash.isBlank()) return state.accounts.bindHwidIfEmpty(account.id, hwidHash)
+        if (!account.hwidHash.equals(hwidHash, ignoreCase = true)) return null
+        return account
+    }
+
+    return state.accounts.createOrGetByHwid(hwidHash)
+}
+
+private fun accountFromBodyIfPresent(body: String, state: ServerState): AccountRecord? {
+    val accountKey = jsonString(body, "accountKey")?.trim()?.uppercase(Locale.ROOT) ?: return null
+    val hwidHash = jsonString(body, "hwidHash")?.trim()?.uppercase(Locale.ROOT) ?: return null
+    if (!accountKeyRegex.matches(accountKey) || !hwidHashRegex.matches(hwidHash)) return null
+    return requireAccount(body, state)
+}
+
+private fun accountPayload(account: AccountRecord, state: ServerState, status: String): String {
+    val used = state.cloudConfigs.usedSlots(account.id)
+    val roles = accountRoles(account, state)
+    val rolesJson = roles.joinToString(",") { """"$it"""" }
+    val roleIconsJson = roles.joinToString(",") { """"$it":"${jsonEscape(roleIcon(it, state))}"""" }
+    val roleSettings = roleSettingsForRoles(roles, state)
+    return buildString {
+        append("""{"ok":true,"status":"${jsonEscape(status)}","accountId":${account.id},"accountKey":"${account.accountKey}","createdAt":"${account.createdAt}","displayName":""")
+        append(jsonNullable(account.displayName))
+        append(""","contact":""")
+        append(jsonNullable(account.contact))
+        append(""","roles":[""")
+        append(rolesJson)
+        append("""],"roleIcons":{$roleIconsJson},"cloudUsed":$used,"cloudLimit":${roleSettings.cloudLimit},"cloudSaveCooldownSeconds":${roleSettings.saveCooldownSeconds},"cloudLoadCooldownSeconds":${roleSettings.loadCooldownSeconds},"cloudUploadBanned":${account.cloudUploadBanned}}""")
+    }
+}
+
+private fun accountRoles(account: AccountRecord, state: ServerState): List<String> {
+    val found = linkedSetOf("USER")
+    state.roleLinks.linksForAccount(account.id).forEach { link ->
+        val license = state.licenses.find(link.licenseKey) ?: return@forEach
+        if (!roleRegex.matches(license.role)) return@forEach
+
+        val isActive = if (license.hwidHash == null && account.hwidHash.isNotBlank()) {
+            when (state.licenses.checkAndBind(link.licenseKey, account.hwidHash)) {
+                is LicenseCheckResult.Valid -> true
+                is LicenseCheckResult.Invalid -> false
+            }
+        } else {
+            license.activeFor(account.hwidHash)
+        }
+
+        if (isActive) {
+            found += license.role
+        }
+    }
+    return found.sortedWith(compareByDescending<String> { rolePriority(it) }.thenBy { it })
+}
+
+private fun rolePriority(role: String): Int {
+    return when (role) {
+        "OWNER" -> 50
+        "ADMIN" -> 40
+        "QA" -> 30
+        "SPONSOR" -> 20
+        "USER" -> 10
+        else -> 0
+    }
+}
+
+private fun roleSettingsForRoles(roles: Collection<String>, state: ServerState): RoleRuntimeSettings {
+    val settings = roles.map { role -> state.roleSettings.find(role) ?: defaultRoleSettings(role) }
+    return RoleRuntimeSettings(
+        cloudLimit = settings.maxOfOrNull { it.cloudLimit } ?: DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT,
+        saveCooldownSeconds = settings.minOfOrNull { it.saveCooldownSeconds } ?: DEFAULT_USER_CLOUD_COOLDOWN_SECONDS,
+        loadCooldownSeconds = settings.minOfOrNull { it.loadCooldownSeconds } ?: DEFAULT_USER_CLOUD_COOLDOWN_SECONDS,
+    )
+}
+
+private fun defaultRoleSettings(role: String): RoleSettingsRecord {
+    return when (role) {
+        "OWNER", "ADMIN" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0)
+        "SPONSOR" -> RoleSettingsRecord(role, SPONSOR_CLOUD_CONFIGS_PER_ACCOUNT, 5, 5)
+        "QA" -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS)
+        else -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS)
+    }
+}
+
+private fun List<AccountRoleLinkRecord>.exclusiveActiveLinks(): List<AccountRoleLinkRecord> {
+    val activeWinnerByKey = asSequence()
+        .filter { !it.disabled }
+        .groupBy { it.licenseKey }
+        .mapValues { (_, records) ->
+            records.maxWithOrNull(compareBy<AccountRoleLinkRecord> { parseInstantOrEpoch(it.grantedAt) }.thenBy { it.accountId })
+        }
+    return map { record ->
+        if (!record.disabled && activeWinnerByKey[record.licenseKey] != record) record.copy(disabled = true) else record
+    }
+}
+
+private fun roleIcon(role: String, state: ServerState): String {
+    if (role == "USER") return "role_user.png"
+    return if (state.roleIconDir.resolve("$role.png").exists()) {
+        "/api/role-icons/$role.png"
+    } else {
+        when (role) {
+            "OWNER" -> "role_owner.png"
+            "ADMIN" -> "role_admin.png"
+            "QA" -> "role_qa.png"
+            "SPONSOR" -> "role_sponsor.png"
+            else -> "role_custom.png"
+        }
+    }
+}
+
+private fun roleIconAsset(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "GET" && exchange.requestMethod != "HEAD") {
+        return text(exchange, 405, "Method not allowed")
+    }
+
+    val fileName = exchange.requestURI.path.substringAfterLast('/')
+    if (!fileName.endsWith(".png", ignoreCase = true)) return text(exchange, 404, "Not found")
+    val role = fileName.removeSuffix(".png").uppercase(Locale.ROOT)
+    if (role == "USER" || !roleRegex.matches(role)) return text(exchange, 404, "Not found")
+
+    val file = state.roleIconDir.resolve("$role.png").normalize()
+    if (!file.startsWith(state.roleIconDir.normalize()) || !file.exists()) return text(exchange, 404, "Not found")
+
+    val bytes = Files.readAllBytes(file)
+    exchange.responseHeaders.set("Content-Type", "image/png")
+    if (exchange.requestMethod == "HEAD") {
+        exchange.sendResponseHeaders(200, -1)
+        exchange.close()
+        return
+    }
+    exchange.sendResponseHeaders(200, bytes.size.toLong())
+    exchange.responseBody.use { it.write(bytes) }
 }
 
 private fun LicenseCheckResult.toJson(): String {
     return when (this) {
-        is LicenseCheckResult.Valid -> {
-            """{"valid":true,"status":"$status","role":"$role","expiresAt":${jsonNullable(expiresAt)}}"""
-        }
+        is LicenseCheckResult.Valid -> """{"valid":true,"status":"$status","role":"$role","expiresAt":${jsonNullable(expiresAt)}}"""
         is LicenseCheckResult.Invalid -> invalidJson(reason)
     }
 }
 
-private fun invalidJson(reason: String): String {
-    return """{"valid":false,"status":"${jsonEscape(reason)}"}"""
-}
+private fun apiError(status: String): String = """{"ok":false,"status":"${jsonEscape(status)}"}"""
+
+private fun rateLimitJson(retryAfterSeconds: Long): String = """{"ok":false,"status":"RATE_LIMIT","retryAfterSeconds":$retryAfterSeconds}"""
+
+private fun invalidJson(reason: String): String = """{"valid":false,"status":"${jsonEscape(reason)}"}"""
 
 private fun parseExpiresArgument(value: String?): String? {
     val raw = value?.trim().orEmpty()
-    if (raw.isBlank() || raw.equals("never", ignoreCase = true)) {
-        return null
-    }
+    if (raw.isBlank() || raw.equals("never", ignoreCase = true)) return null
     return try {
-        LocalDate.parse(raw)
-            .plusDays(1)
-            .atStartOfDay()
-            .toInstant(ZoneOffset.UTC)
-            .toString()
+        LocalDate.parse(raw).plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toString()
     } catch (_: DateTimeParseException) {
         throw IllegalArgumentException("Date must be YYYY-MM-DD or never")
     }
 }
 
-private fun generateLicenseKey(): String {
+private fun parseInstantOrEpoch(value: String): Instant = runCatching { Instant.parse(value) }.getOrDefault(Instant.EPOCH)
+
+private fun String.uppercaseRole(): String? {
+    val role = trim().uppercase(Locale.ROOT)
+    return role.takeIf { roleRegex.matches(it) }
+}
+
+private fun generateKey(length: Int): String {
     val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     val random = SecureRandom()
-    return buildString(32) {
-        repeat(32) {
-            append(alphabet[random.nextInt(alphabet.length)])
-        }
+    return buildString(length) {
+        repeat(length) { append(alphabet[random.nextInt(alphabet.length)]) }
     }
 }
 
-private fun generateCloudConfigKey(existing: Set<String>): String {
-    val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    val random = SecureRandom()
+private fun generateUniqueKey(length: Int, existing: Set<String>): String {
     repeat(100) {
-        val key = buildString(8) {
-            repeat(8) {
-                append(alphabet[random.nextInt(alphabet.length)])
-            }
-        }
-        if (key !in existing) {
-            return key
-        }
+        val key = generateKey(length)
+        if (key !in existing) return key
     }
-    throw IllegalStateException("Could not generate unique cloud config key")
+    throw IllegalStateException("Could not generate unique key")
+}
+
+private fun generateCloudConfigKey(existing: Set<String>): String = generateUniqueKey(8, existing)
+
+private fun atomicWrite(file: Path, content: String) {
+    val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
+    tmp.writeText(content)
+    runCatching {
+        Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }.getOrElse {
+        Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    }
 }
 
 private fun splitArgs(line: String): List<String> {
@@ -715,9 +1522,7 @@ private fun splitArgs(line: String): List<String> {
             else -> current.append(char)
         }
     }
-    if (current.isNotEmpty()) {
-        result += current.toString()
-    }
+    if (current.isNotEmpty()) result += current.toString()
     return result
 }
 
@@ -726,8 +1531,8 @@ private fun HttpExchange.bodyString(): String {
 }
 
 private fun jsonString(json: String, name: String): String? {
-    val pattern = Regex(""""${Regex.escape(name)}"\s*:\s*"([^"]*)"""")
-    return pattern.find(json)?.groupValues?.getOrNull(1)
+    val pattern = Regex(""""${Regex.escape(name)}"\s*:\s*"((?:\\.|[^"\\])*)"""")
+    return pattern.find(json)?.groupValues?.getOrNull(1)?.jsonUnescape()
 }
 
 private fun text(exchange: HttpExchange, code: Int, body: String) {
@@ -741,14 +1546,17 @@ private fun json(exchange: HttpExchange, code: Int, body: String) {
 }
 
 private fun write(exchange: HttpExchange, code: Int, body: String) {
+    if (exchange.requestMethod == "HEAD") {
+        exchange.sendResponseHeaders(code, -1)
+        exchange.close()
+        return
+    }
     val bytes = body.toByteArray(StandardCharsets.UTF_8)
     exchange.sendResponseHeaders(code, bytes.size.toLong())
     exchange.responseBody.use { it.write(bytes) }
 }
 
-private fun jsonNullable(value: String?): String {
-    return value?.let { """"${jsonEscape(it)}"""" } ?: "null"
-}
+private fun jsonNullable(value: String?): String = value?.let { """"${jsonEscape(it)}"""" } ?: "null"
 
 private fun jsonEscape(value: String): String {
     return value
@@ -759,6 +1567,14 @@ private fun jsonEscape(value: String): String {
         .replace("\t", "\\t")
 }
 
-private fun env(name: String): String? {
-    return System.getenv(name)?.takeIf { it.isNotBlank() }
+private fun String.jsonUnescape(): String {
+    return replace("\\\"", "\"")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("\\\\", "\\")
 }
+
+private fun String.tsv(): String = replace("\t", " ").replace("\n", " ").replace("\r", " ")
+
+private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }

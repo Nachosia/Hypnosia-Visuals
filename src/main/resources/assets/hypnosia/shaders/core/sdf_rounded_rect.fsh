@@ -30,7 +30,7 @@ void main() {
     float insideDistance = -distanceToOuter;
     float strokeMask = 0.0;
     if (strokeThickness > 0.001) {
-        strokeMask = (1.0 - smoothstep(strokeThickness - aa, strokeThickness + aa, insideDistance)) * shapeAlpha;
+        strokeMask = 1.0 - smoothstep(strokeThickness - aa, strokeThickness + aa, insideDistance);
     }
 
     vec4 color = mix(FillColor, StrokeColor, strokeMask);
@@ -40,5 +40,5 @@ void main() {
         discard;
     }
 
-    fragColor = color * ColorModulator;
+    fragColor = color;
 }

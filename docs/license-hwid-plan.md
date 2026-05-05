@@ -69,7 +69,7 @@ Unknown roles are treated as an invalid response.
 }
 ```
 
-The client must not send this request when `config/hypnosia/license.properties` is missing or `license.key` is blank.
+The client must not send this request when `.minecraft/hypnosia/license.properties` is missing or `license.key` is blank.
 The client also does not read the API URL from `license.properties`; server endpoint configuration belongs to the build/server deployment, not the user config.
 
 Startup flow:

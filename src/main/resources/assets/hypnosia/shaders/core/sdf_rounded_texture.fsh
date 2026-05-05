@@ -40,5 +40,5 @@ void main() {
         discard;
     }
 
-    fragColor = sampled * ColorModulator;
+    fragColor = sampled;
 }

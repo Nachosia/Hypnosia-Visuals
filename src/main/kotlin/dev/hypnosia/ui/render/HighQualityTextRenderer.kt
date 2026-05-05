@@ -3,11 +3,14 @@ package dev.hypnosia.ui.render
 import com.mojang.blaze3d.buffers.GpuBuffer
 import com.mojang.blaze3d.systems.ProjectionType
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.textures.AddressMode
+import com.mojang.blaze3d.textures.FilterMode
 import com.mojang.blaze3d.vertex.VertexFormat
 import dev.hypnosia.HypnosiaClient
 import dev.hypnosia.render.HypnosiaShaders
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
+import net.minecraft.client.gl.GpuSampler
 import net.minecraft.client.render.BuiltBuffer
 import net.minecraft.client.render.BufferBuilder
 import net.minecraft.client.render.ProjectionMatrix2
@@ -27,18 +30,23 @@ import java.awt.font.FontRenderContext
 import java.awt.image.BufferedImage
 import java.util.OptionalDouble
 import java.util.OptionalInt
-import kotlin.math.ceil
+import kotlin.math.min
 import kotlin.math.max
+import kotlin.math.round
+import kotlin.math.sqrt
 
 object HighQualityTextRenderer {
     private const val GUI_MODEL_VIEW_Z = -11000.0f
     private const val GUI_VERTEX_Z = 0.0f
     private const val ATLAS_SCALE = 4.0f
     private const val ATLAS_WIDTH = 2048
-    private const val GLYPH_PADDING = 4
+    private const val SDF_SPREAD = 8
+    private const val GLYPH_PADDING = SDF_SPREAD + 2
 
     private val guiProjection = ProjectionMatrix2("hypnosia_hq_text_gui", 1000.0f, 11000.0f, true)
     private val atlases = mutableMapOf<AtlasKey, FontAtlas?>()
+    private val baseFonts = mutableMapOf<FigmaTextRenderer.Font, Font?>()
+    private var linearTextSampler: GpuSampler? = null
 
     fun draw(
         context: DrawContext,
@@ -56,41 +64,43 @@ object HighQualityTextRenderer {
         val guiMatrix = createGuiMatrix(context)
         val baselineY = y + atlas.ascent
         var cursorX = x
-
-        context.drawDeferredElements()
-        val tessellator = Tessellator.getInstance()
-        val buffer = tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR)
-        var glyphCount = 0
+        val queuedGlyphs = mutableListOf<QueuedGlyph>()
 
         text.forEach { char ->
-            val glyph = atlas.glyphs[char] ?: atlas.glyphs['?']
+            val glyph = atlas.glyphs[char] ?: atlas.glyphs[atlas.fallbackGlyph]
             if (glyph == null) {
                 cursorX += style.size * 0.5f + style.letterSpacing
                 return@forEach
             }
 
             if (!char.isWhitespace() && glyph.width > 0.0f && glyph.height > 0.0f) {
-                val gx = cursorX + glyph.offsetX
-                val gy = baselineY + glyph.offsetY
-                putVertex(buffer, guiMatrix, gx, gy, glyph.u0, glyph.v0, color)
-                putVertex(buffer, guiMatrix, gx, gy + glyph.height, glyph.u0, glyph.v1, color)
-                putVertex(buffer, guiMatrix, gx + glyph.width, gy + glyph.height, glyph.u1, glyph.v1, color)
-                putVertex(buffer, guiMatrix, gx + glyph.width, gy, glyph.u1, glyph.v0, color)
-                glyphCount++
+                queuedGlyphs += QueuedGlyph(glyph, cursorX + glyph.offsetX, baselineY + glyph.offsetY)
             }
 
             cursorX += glyph.advance + style.letterSpacing
         }
 
-        if (glyphCount == 0) {
-            buffer.end().close()
+        if (queuedGlyphs.isEmpty()) {
             return true
+        }
+
+        context.drawDeferredElements()
+        val tessellator = Tessellator.getInstance()
+        val buffer = tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR)
+        queuedGlyphs.forEach { queued ->
+            val glyph = queued.glyph
+            val gx = queued.x
+            val gy = queued.y
+            putVertex(buffer, guiMatrix, gx, gy, glyph.u0, glyph.v0, color)
+            putVertex(buffer, guiMatrix, gx, gy + glyph.height, glyph.u0, glyph.v1, color)
+            putVertex(buffer, guiMatrix, gx + glyph.width, gy + glyph.height, glyph.u1, glyph.v1, color)
+            putVertex(buffer, guiMatrix, gx + glyph.width, gy, glyph.u1, glyph.v0, color)
         }
 
         val builtBuffer = buffer.end()
         val vertexBuffer = createOwnedVertexBuffer("Hypnosia HQ text vertices", builtBuffer)
         try {
-            renderImmediate(context, vertexBuffer, atlas.texture, glyphCount)
+            renderImmediate(context, vertexBuffer, atlas.texture, queuedGlyphs.size)
         } finally {
             vertexBuffer.close()
             builtBuffer.close()
@@ -107,7 +117,7 @@ object HighQualityTextRenderer {
         val atlas = atlas(style) ?: return null
         var width = 0.0f
         text.forEachIndexed { index, char ->
-            width += (atlas.glyphs[char] ?: atlas.glyphs['?'])?.advance ?: style.size * 0.5f
+            width += (atlas.glyphs[char] ?: atlas.glyphs[atlas.fallbackGlyph])?.advance ?: style.size * 0.5f
             if (index != text.lastIndex) {
                 width += style.letterSpacing
             }
@@ -115,8 +125,40 @@ object HighQualityTextRenderer {
         return width
     }
 
+    fun prewarmCommonAtlases(): Int {
+        val styles = listOf(
+            FigmaTextRenderer.Font.Main to 8.5f,
+            FigmaTextRenderer.Font.Main to 9.0f,
+            FigmaTextRenderer.Font.Main to 9.5f,
+            FigmaTextRenderer.Font.Main to 10.0f,
+            FigmaTextRenderer.Font.Main to 10.5f,
+            FigmaTextRenderer.Font.Main to 11.0f,
+            FigmaTextRenderer.Font.Main to 12.0f,
+            FigmaTextRenderer.Font.Main to 13.0f,
+            FigmaTextRenderer.Font.Main to 14.0f,
+            FigmaTextRenderer.Font.Main to 15.0f,
+            FigmaTextRenderer.Font.Main to 16.0f,
+            FigmaTextRenderer.Font.Main to 18.0f,
+            FigmaTextRenderer.Font.Main to 20.0f,
+            FigmaTextRenderer.Font.Main to 24.0f,
+            FigmaTextRenderer.Font.Title to 24.0f,
+            FigmaTextRenderer.Font.Title to 32.0f,
+            FigmaTextRenderer.Font.Title to 64.0f,
+        )
+            .distinctBy { (font, size) -> AtlasKey(font, normalizeSize(size)) }
+
+        var warmed = 0
+        styles.forEach { (font, size) ->
+            val style = FigmaTextRenderer.FigmaTextStyle(font, size, size)
+            if (atlas(style) != null) {
+                warmed++
+            }
+        }
+        return warmed
+    }
+
     private fun atlas(style: FigmaTextRenderer.FigmaTextStyle): FontAtlas? {
-        val key = AtlasKey(style.font, style.size)
+        val key = AtlasKey(style.font, normalizeSize(style.size))
         if (atlases.containsKey(key)) {
             return atlases[key]
         }
@@ -127,23 +169,18 @@ object HighQualityTextRenderer {
     }
 
     private fun buildAtlas(key: AtlasKey): FontAtlas {
-        val client = MinecraftClient.getInstance()
-        val fontId = when (key.font) {
-            FigmaTextRenderer.Font.Main -> Identifier.of(HypnosiaClient.MOD_ID, "font/inter_regular.ttf")
-            FigmaTextRenderer.Font.Title -> Identifier.of(HypnosiaClient.MOD_ID, "font/satyr_sp.ttf")
-        }
-        val resource = client.resourceManager.getResource(fontId)
-            .orElseThrow { IllegalStateException("Missing font resource: $fontId") }
-
-        val awtFont = resource.inputStream.use { input ->
-            Font.createFont(Font.TRUETYPE_FONT, input).deriveFont(key.size * ATLAS_SCALE)
-        }
+        val baseFont = baseFont(key.font)
+            ?: throw IllegalStateException("Missing base font resource for ${key.font}")
+        val awtFont = baseFont.deriveFont(key.size * ATLAS_SCALE)
         val frc = FontRenderContext(null, true, true)
         val lineMetrics = awtFont.getLineMetrics("Ag", frc)
         val ascent = lineMetrics.ascent / ATLAS_SCALE
+        val fallbackGlyph = if (awtFont.canDisplay('?')) '?' else glyphChars().firstOrNull { awtFont.canDisplay(it) } ?: ' '
 
         val glyphSpecs = glyphChars()
             .filter { awtFont.canDisplay(it) }
+            .let { chars -> if (fallbackGlyph in chars) chars else chars + fallbackGlyph }
+            .distinct()
             .mapNotNull { char ->
                 val vector = awtFont.createGlyphVector(frc, char.toString())
                 val bounds = vector.getPixelBounds(frc, 0.0f, 0.0f)
@@ -185,23 +222,12 @@ object HighQualityTextRenderer {
 
         val atlasHeight = max(1, nextPowerOfTwo(penY + rowHeight))
         val atlasImage = BufferedImage(ATLAS_WIDTH, atlasHeight, BufferedImage.TYPE_INT_ARGB)
-        val graphics = atlasImage.createGraphics()
-        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        graphics.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
-        graphics.font = awtFont
-        graphics.color = Color.WHITE
         placed.forEach { placedGlyph ->
             val glyph = placedGlyph.glyph
             if (glyph.width > 0 && glyph.height > 0) {
-                graphics.drawGlyphVector(
-                    glyph.vector,
-                    (placedGlyph.x + GLYPH_PADDING - glyph.boundsX).toFloat(),
-                    (placedGlyph.y + GLYPH_PADDING - glyph.boundsY).toFloat(),
-                )
+                drawGlyphSdf(atlasImage, placedGlyph)
             }
         }
-        graphics.dispose()
 
         val nativeImage = NativeImage(NativeImage.Format.RGBA, ATLAS_WIDTH, atlasHeight, false)
         for (yy in 0 until atlasHeight) {
@@ -242,16 +268,107 @@ object HighQualityTextRenderer {
             }
         }
 
-        return FontAtlas(texture, glyphs, ascent)
+        return FontAtlas(texture, glyphs, ascent, fallbackGlyph)
+    }
+
+    private fun baseFont(font: FigmaTextRenderer.Font): Font? {
+        if (baseFonts.containsKey(font)) {
+            return baseFonts[font]
+        }
+
+        val client = MinecraftClient.getInstance()
+        val fontId = when (font) {
+            FigmaTextRenderer.Font.Main -> Identifier.of(HypnosiaClient.MOD_ID, "font/inter_medium.ttf")
+            FigmaTextRenderer.Font.Title -> Identifier.of(HypnosiaClient.MOD_ID, "font/satyr_sp.ttf")
+        }
+        val loaded = runCatching {
+            val resource = client.resourceManager.getResource(fontId)
+                .orElseThrow { IllegalStateException("Missing font resource: $fontId") }
+            resource.inputStream.use { input -> Font.createFont(Font.TRUETYPE_FONT, input) }
+        }.getOrNull()
+        baseFonts[font] = loaded
+        return loaded
+    }
+
+    private fun drawGlyphSdf(atlasImage: BufferedImage, placedGlyph: PlacedGlyph) {
+        val glyph = placedGlyph.glyph
+        val glyphImage = BufferedImage(glyph.width, glyph.height, BufferedImage.TYPE_INT_ARGB)
+        val graphics = glyphImage.createGraphics()
+        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+        graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        graphics.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
+        graphics.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+        graphics.color = Color.WHITE
+        graphics.drawGlyphVector(
+            glyph.vector,
+            (GLYPH_PADDING - glyph.boundsX).toFloat(),
+            (GLYPH_PADDING - glyph.boundsY).toFloat(),
+        )
+        graphics.dispose()
+
+        val width = glyph.width
+        val height = glyph.height
+        val inside = BooleanArray(width * height)
+        for (yy in 0 until height) {
+            for (xx in 0 until width) {
+                inside[yy * width + xx] = ((glyphImage.getRGB(xx, yy) ushr 24) and 0xFF) >= 128
+            }
+        }
+
+        val maxDistance = SDF_SPREAD.toFloat()
+        val maxDistanceSq = SDF_SPREAD * SDF_SPREAD
+        for (yy in 0 until height) {
+            for (xx in 0 until width) {
+                val currentInside = inside[yy * width + xx]
+                var nearestSq = maxDistanceSq + 1
+                val y0 = max(0, yy - SDF_SPREAD)
+                val y1 = min(height - 1, yy + SDF_SPREAD)
+                val x0 = max(0, xx - SDF_SPREAD)
+                val x1 = min(width - 1, xx + SDF_SPREAD)
+
+                scan@ for (sy in y0..y1) {
+                    val dy = sy - yy
+                    for (sx in x0..x1) {
+                        if (inside[sy * width + sx] == currentInside) {
+                            continue
+                        }
+                        val dx = sx - xx
+                        val distanceSq = dx * dx + dy * dy
+                        if (distanceSq < nearestSq) {
+                            nearestSq = distanceSq
+                            if (nearestSq == 0) {
+                                break@scan
+                            }
+                        }
+                    }
+                }
+
+                val distance = if (nearestSq <= maxDistanceSq) sqrt(nearestSq.toFloat()) else maxDistance
+                val signedDistance = if (currentInside) distance else -distance
+                val coverage = (0.5f + signedDistance / (maxDistance * 2.0f)).coerceIn(0.0f, 1.0f)
+                val alpha = (coverage * 255.0f + 0.5f).toInt().coerceIn(0, 255)
+                val argb = (alpha shl 24) or 0x00FFFFFF
+                atlasImage.setRGB(placedGlyph.x + xx, placedGlyph.y + yy, argb)
+            }
+        }
     }
 
     private fun glyphChars(): List<Char> {
         val chars = mutableListOf<Char>()
         chars += (32..126).map(Int::toChar)
+        chars += (0x00A0..0x00FF).map(Int::toChar)
+        chars += (0x2000..0x206F).map(Int::toChar)
+        chars += (0x20A0..0x20CF).map(Int::toChar)
+        chars += (0x2190..0x21FF).map(Int::toChar)
+        chars += (0x2200..0x22FF).map(Int::toChar)
         chars += (0x0400..0x04FF).map(Int::toChar)
+        chars += listOf('•', '–', '—', '…', '№', '×', '✓')
         chars += listOf('•', '–', '—', '…', '№')
         return chars.distinct()
     }
+
+    private fun normalizeSize(size: Float): Float =
+        (round(size * 4.0f) / 4.0f).coerceAtLeast(1.0f)
 
     private fun putVertex(
         buffer: BufferBuilder,
@@ -323,7 +440,7 @@ object HighQualityTextRenderer {
                     HypnosiaScissor.current()?.let { scissor ->
                         pass.enableScissor(scissor.x, scissor.y, scissor.width, scissor.height)
                     }
-                    pass.bindTexture("Sampler0", texture.glTextureView, texture.sampler)
+                    pass.bindTexture("Sampler0", texture.glTextureView, textSampler())
                     pass.setPipeline(HypnosiaShaders.HQ_TEXT)
                     pass.setVertexBuffer(0, vertexBuffer)
                     pass.setIndexBuffer(gpuIndexBuffer, indexType)
@@ -340,6 +457,18 @@ object HighQualityTextRenderer {
             result = result shl 1
         }
         return result
+    }
+
+    private fun textSampler(): GpuSampler {
+        linearTextSampler?.let { return it }
+        return RenderSystem.getDevice().createSampler(
+            AddressMode.CLAMP_TO_EDGE,
+            AddressMode.CLAMP_TO_EDGE,
+            FilterMode.LINEAR,
+            FilterMode.LINEAR,
+            1,
+            OptionalDouble.empty(),
+        ).also { linearTextSampler = it }
     }
 
     private data class AtlasKey(
@@ -375,9 +504,16 @@ object HighQualityTextRenderer {
         val v1: Float,
     )
 
+    private data class QueuedGlyph(
+        val glyph: Glyph,
+        val x: Float,
+        val y: Float,
+    )
+
     private data class FontAtlas(
         val texture: NativeImageBackedTexture,
         val glyphs: Map<Char, Glyph>,
         val ascent: Float,
+        val fallbackGlyph: Char,
     )
 }

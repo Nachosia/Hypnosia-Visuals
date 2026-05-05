@@ -1,6 +1,7 @@
 package dev.hypnosia.ui.layout
 
 import dev.hypnosia.ui.render.HypnosiaRenderUtils
+import dev.hypnosia.ui.render.FigmaTextRenderer
 import net.minecraft.client.gui.DrawContext
 
 object LayoutExamples {
@@ -52,19 +53,19 @@ object LayoutExamples {
                 strokeColor = 0xFF2A2A31.toInt(),
                 strokeThickness = 1.0f,
             )
-            context.drawText(
-                MinecraftAccess.textRenderer(),
-                label,
-                (rect.x + 14.0f).toInt(),
-                (rect.y + 17.0f).toInt(),
-                0xFFF0F0F2.toInt(),
-                false,
+            FigmaTextRenderer.drawInBox(
+                context = context,
+                text = label,
+                x = rect.x + 14.0f,
+                y = rect.y + 14.0f,
+                width = rect.width - 28.0f,
+                height = 18.0f,
+                color = 0xFFF0F0F2.toInt(),
+                style = FigmaTextRenderer.Styles.Ui14,
+                horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
+                verticalAlign = FigmaTextRenderer.VerticalAlign.Center,
             )
             },
         )
     }
-}
-
-private object MinecraftAccess {
-    fun textRenderer() = net.minecraft.client.MinecraftClient.getInstance().textRenderer
 }

@@ -10,8 +10,10 @@ in vec4 vertexColor;
 out vec4 fragColor;
 
 void main() {
-    vec4 sampled = texture(Sampler0, texCoord);
-    vec4 color = sampled * vertexColor * ColorModulator;
+    float distance = texture(Sampler0, texCoord).a;
+    float smoothing = max(fwidth(distance) * 0.75, 0.012);
+    float alpha = smoothstep(0.5 - smoothing, 0.5 + smoothing, distance);
+    vec4 color = vec4(vertexColor.rgb, vertexColor.a * alpha);
     if (color.a <= 0.001) {
         discard;
     }

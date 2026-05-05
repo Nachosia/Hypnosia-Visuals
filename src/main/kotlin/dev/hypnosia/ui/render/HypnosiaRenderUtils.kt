@@ -58,11 +58,16 @@ object HypnosiaRenderUtils {
         val safeRadius = radius.coerceIn(0.0f, min(width, height) * 0.5f)
         val safeStroke = strokeThickness.coerceIn(0.0f, max(0.0f, min(width, height) * 0.5f))
         val uniformBuffer = createBoxUniformBuffer(width, height, safeRadius, safeStroke, bgColor, strokeColor)
+        val pipeline = if (shouldUseOpaqueBoxPipeline(width, height, safeRadius, bgColor, strokeColor, safeStroke)) {
+            HypnosiaShaders.SDF_ROUNDED_RECT_OPAQUE
+        } else {
+            HypnosiaShaders.SDF_ROUNDED_RECT
+        }
 
         drawUniformQuad(
             context = context,
             debugName = "Hypnosia SDF rounded rectangle",
-            pipeline = HypnosiaShaders.SDF_ROUNDED_RECT,
+            pipeline = pipeline,
             uniformName = "HypnosiaBox",
             uniformBuffer = uniformBuffer,
             x = x,
@@ -694,6 +699,32 @@ object HypnosiaRenderUtils {
             GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
             bytes,
         )
+    }
+
+    private fun shouldUseOpaqueBoxPipeline(
+        width: Float,
+        height: Float,
+        radius: Float,
+        bgColor: Int,
+        strokeColor: Int,
+        strokeThickness: Float,
+    ): Boolean {
+        val fillOpaque = ((bgColor ushr 24) and 0xFF) == 0xFF
+        if (!fillOpaque) {
+            return false
+        }
+        if (radius > 0.001f) {
+            return false
+        }
+
+        val minSize = min(width, height)
+        val isTinyShape = minSize <= 18.0f
+        val isCircleLike = radius >= minSize * 0.45f
+        if (isTinyShape || isCircleLike) {
+            return false
+        }
+
+        return strokeThickness <= 0.001f || ((strokeColor ushr 24) and 0xFF) == 0xFF
     }
 
     private fun putRgba(bytes: ByteBuffer, argb: Int) {

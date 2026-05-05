@@ -51,5 +51,5 @@ void main() {
         discard;
     }
 
-    fragColor = color * ColorModulator;
+    fragColor = color;
 }

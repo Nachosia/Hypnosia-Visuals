@@ -34,11 +34,19 @@
 
 ## hypnosia.profile-calendar-content - Profile Calendar Content
 - Purpose: Base content view matching Figma node `272:744` (`profile-calendar-content`) for profile activity summaries, calendar grid, profile skin panel, and seven-day graph.
-- Files: `src/main/kotlin/dev/hypnosia/ui/HypnosiaMenuScreen.kt`
-- Inputs/Props: Minecraft username for the profile label; preview activity values until real activity data is wired.
+- Files: `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`, `src/main/kotlin/dev/hypnosia/ui/HypnosiaMenuScreen.kt`
+- Inputs/Props: Minecraft username, active role label, local playtime snapshot, local day activity map.
 - States: shown when interacting with the Base profile area.
 - Dependencies: none.
-- Reuse notes: Keep the view at Base-local `73,67` with size `604x370`; replace preview values with real activity data without changing geometry.
+- Reuse notes: Keep the view at Base-local `73,67` with size `604x370`; playtime is intentionally local-only via `HypnosiaPlaytime`.
+
+## hypnosia.local-playtime-tracker - Local Playtime Tracker
+- Purpose: Tracks local total playtime, daily activity, launch count, and login streak for the profile calendar without sending playtime data to the server.
+- Files: `src/main/kotlin/dev/hypnosia/ui/profile/HypnosiaPlaytime.kt`, `src/main/kotlin/dev/hypnosia/HypnosiaClient.kt`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: Minecraft client tick state and local date.
+- States: no-world idle, in-world counting, periodic saved snapshot.
+- Dependencies: none.
+- Reuse notes: Store future profile-only counters in `minecraft/hypnosia/playtime.properties`; keep cloud/license data separate from local playtime data.
 
 ## hypnosia.rounded-primitive-renderer - Rounded Primitive Renderer
 - Purpose: Reusable native Minecraft GUI renderer for smooth rounded rectangles, panels, and dots without external UI libraries.
@@ -64,13 +72,13 @@
 - Dependencies: none.
 - Reuse notes: Rebuild alongside the next settings drawer pass; do not wire this to the removed drawer path.
 
-## hypnosia.target-hud - Target HUD Stub
-- Purpose: Placeholder renderer for future TargetHUD implementation.
-- Files: `src/main/kotlin/dev/hypnosia/ui/hud/TargetHudRenderer.kt`
-- Inputs/Props: optional `TargetHudSnapshot`.
-- States: no-op until an editable Figma node or dedicated screenshot/spec is provided.
+## hypnosia.target-hud - Target HUD Overlay
+- Purpose: Figma-derived Target HUD overlay with six selectable versions, shared equipment strip, target name/health display, and player head/model preview.
+- Files: `src/main/kotlin/dev/hypnosia/hud/TargetHud.kt`, `src/main/kotlin/dev/hypnosia/hud/TargetHudSettings.kt`, `src/main/kotlin/dev/hypnosia/HypnosiaClient.kt`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: enabled state, `Version` (`V1`..`V6`), normalized `x/y` position, equipment strip toggles, held-item/armor/durability toggles, model yaw/pitch/scale.
+- States: disabled, no target, V1 bar, V2 outline circle, V3 filled circle, V4 large model bar, V5 large model outline circle, V6 large model filled circle; draggable while chat is open.
 - Dependencies: none.
-- Reuse notes: Keep exact visuals out of this renderer until TargetHUD dimensions and assets are confirmed.
+- Reuse notes: Keep geometry in Target HUD group-local Figma pixels and render through fixed framebuffer scaling, matching `HudModulesHud`; use `TargetHudSettings` for persistence instead of hard-coded positions.
 
 ## hypnosia.sdf-figma-box - SDF Figma Box
 - Purpose: Shader-backed rounded rectangle primitive for pixel-aligned Figma panels, buttons, fields, pills, and cards with CSS-style inner stroke.
@@ -167,3 +175,27 @@
 - States: inherits hover/selected tint from the owning component.
 - Dependencies: none.
 - Reuse notes: Use this only for built-in menu symbols or as a guard against broken assets; real exported PNG Figma icons can still use `HypnosiaRenderUtils.drawRoundedTexture`.
+
+## hypnosia.account-cloud-flow - Account Cloud Flow
+- Purpose: Account creation, Welcome Cloud transition, and account manager content matching the Figma `accaut create`, `accaut Welcome`, and `account manager` frames inside the existing Base shell.
+- Files: `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`, `src/main/resources/assets/hypnosia/textures/gui/icons/account_cloud.png`, `src/main/resources/assets/hypnosia/textures/gui/icons/cloud_outline.png`, `src/main/resources/assets/hypnosia/textures/gui/icons/cloud_config_key.png`, `src/main/resources/assets/hypnosia/textures/gui/icons/folder_select_cloud.png`
+- Inputs/Props: `AccountManager.state`, local terms checkbox state, create callback, current Minecraft player name, active account session data.
+- States: unchecked terms, checked terms, creating, create error, welcome cloud animation, account manager with/without active account.
+- Dependencies: none.
+- Reuse notes: Use the left sidebar account button or the top-right profile pill to enter the account flow; keep the black-hole topbar icon reserved for the profile/calendar screen.
+
+## hypnosia.hud-modules-overlay - HotBaR and Armor HUD Overlay
+- Purpose: Figma-derived HUD overlay modules for `HotBaR` and `Armor HUD`, with selectable version, X/Y axis layout, and normalized screen position controls.
+- Files: `src/main/kotlin/dev/hypnosia/hud/HudModulesHud.kt`, `src/main/kotlin/dev/hypnosia/hud/HudModuleSettings.kt`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: enabled state, `Version` (`V1`/`V2`), `Axis` (`X`/`Y`), normalized `x/y` position, current player inventory/equipment/status values.
+- States: enabled/disabled module row, horizontal/vertical axis, V1/V2 rendering, X/Y slider dragging in the settings drawer.
+- Dependencies: none.
+- Reuse notes: Use `HudModuleSettings` for new HUD overlay persistence and `HudModulesHud` for fixed-framebuffer rendering that stays visually stable across Minecraft GUI scale.
+
+## hypnosia.extra-hud-modules - Player Info, Inventory, Cooldown, Potions HUD
+- Purpose: Additional Figma-derived HUD overlays for live player info, inventory grid, active item cooldowns, and status effects.
+- Files: `src/main/kotlin/dev/hypnosia/hud/PlayerInfoHud.kt`, `src/main/kotlin/dev/hypnosia/hud/InventoryHud.kt`, `src/main/kotlin/dev/hypnosia/hud/CooldownHud.kt`, `src/main/kotlin/dev/hypnosia/hud/PotionsHud.kt`, `src/main/kotlin/dev/hypnosia/hud/HudRenderSupport.kt`, `src/main/kotlin/dev/hypnosia/hud/HudDragController.kt`, `src/main/kotlin/dev/hypnosia/hud/HudModuleSettings.kt`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: enabled state, version/mode, normalized `x/y` position, current player velocity/TPS/coords/inventory/cooldowns/effects.
+- States: enabled/disabled module row, V1/V2/V3/V4 where applicable, Player Info mode `BPS/TPS/CORDS/ALL`, drag in chat, clipped marquee for long cooldown/effect names.
+- Dependencies: none.
+- Reuse notes: Use `HudRenderSupport` for fixed-framebuffer coordinates, shared colors, Inter Medium text, and marquee; use `HudDragController` for any new simple draggable HUD overlay.

@@ -1,6 +1,5 @@
 package dev.hypnosia.license
 
-import net.fabricmc.loader.api.FabricLoader
 import java.util.Properties
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -15,11 +14,10 @@ data class LicenseConfig(
         private val licenseRegex = Regex("^[A-Za-z0-9]{32}$")
 
         fun loadOrCreate(): LicenseConfig {
-            val configDir = FabricLoader.getInstance().configDir.resolve("hypnosia")
-            val configFile = configDir.resolve(CONFIG_FILE_NAME)
+            val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
 
             if (!configFile.exists()) {
-                configDir.createDirectories()
+                configFile.parent.createDirectories()
                 val defaults = Properties()
                 defaults["license.key"] = ""
                 configFile.outputStream().use { output ->
@@ -43,6 +41,21 @@ data class LicenseConfig(
             return LicenseConfig(
                 licenseKey = key,
             )
+        }
+
+        fun saveLicenseKey(licenseKey: String) {
+            require(licenseRegex.matches(licenseKey)) { "Invalid license key" }
+            val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
+            configFile.parent.createDirectories()
+
+            val properties = Properties()
+            properties["license.key"] = licenseKey.uppercase()
+            configFile.outputStream().use { output ->
+                properties.store(
+                    output,
+                    "Hypnosia license config. Put only your 32-character license key here. Server settings are not stored on the client.",
+                )
+            }
         }
     }
 }

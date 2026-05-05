@@ -1,6 +1,5 @@
 package dev.hypnosia.license
 
-import net.fabricmc.loader.api.FabricLoader
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -88,16 +87,15 @@ object HardwareFingerprint {
     }
 
     private fun fallbackInstallId(): String {
-        val configDir = FabricLoader.getInstance().configDir.resolve("hypnosia")
-        val file = configDir.resolve(FALLBACK_INSTALL_ID_FILE)
+        val file = HypnosiaPaths.rootFile(FALLBACK_INSTALL_ID_FILE)
         if (file.exists()) {
-            return file.readText().trim().takeIf { it.length >= 32 } ?: createFallbackInstallId(configDir, file)
+            return file.readText().trim().takeIf { it.length >= 32 } ?: createFallbackInstallId(file)
         }
-        return createFallbackInstallId(configDir, file)
+        return createFallbackInstallId(file)
     }
 
-    private fun createFallbackInstallId(configDir: Path, file: Path): String {
-        configDir.createDirectories()
+    private fun createFallbackInstallId(file: Path): String {
+        file.parent.createDirectories()
         val bytes = ByteArray(32)
         SecureRandom().nextBytes(bytes)
         val id = bytes.toHex()

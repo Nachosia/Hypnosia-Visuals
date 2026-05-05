@@ -31,6 +31,16 @@ class ScrollColumn(
         return this
     }
 
+    fun replaceChildren(nodes: Iterable<UiNode>): ScrollColumn {
+        children.clear()
+        children += nodes
+        measuredChildren = emptyList()
+        contentHeight = 0.0f
+        maxScroll = 0.0f
+        scroll.snap(0.0f)
+        return this
+    }
+
     override fun measure(constraints: Constraints): Size {
         val childConstraints = Constraints(
             maxWidth = (constraints.maxWidth - padding.horizontal).coerceAtLeast(0.0f),
@@ -84,6 +94,14 @@ class ScrollColumn(
             return false
         }
         return children.asReversed().any { it.mouseClicked(mouseX, mouseY, button) }
+    }
+
+    override fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean {
+        return children.asReversed().any { it.mouseReleased(mouseX, mouseY, button) }
+    }
+
+    override fun mouseDragged(mouseX: Float, mouseY: Float, button: Int, deltaX: Float, deltaY: Float): Boolean {
+        return children.asReversed().any { it.mouseDragged(mouseX, mouseY, button, deltaX, deltaY) }
     }
 
     override fun mouseScrolled(

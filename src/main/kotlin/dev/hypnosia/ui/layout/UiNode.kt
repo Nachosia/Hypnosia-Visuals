@@ -16,7 +16,15 @@ interface UiNode {
 
     fun mouseClicked(mouseX: Float, mouseY: Float, button: Int): Boolean = false
 
+    fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean = false
+
+    fun mouseDragged(mouseX: Float, mouseY: Float, button: Int, deltaX: Float, deltaY: Float): Boolean = false
+
     fun mouseScrolled(mouseX: Float, mouseY: Float, horizontalAmount: Float, verticalAmount: Float): Boolean = false
+
+    fun keyPressed(keyCode: Int, scanCode: Int, modifiers: Int): Boolean = false
+
+    fun charTyped(chr: Char, modifiers: Int): Boolean = false
 }
 
 abstract class BaseUiNode(

@@ -14,6 +14,7 @@ class FigmaRoot(
     private val designHeight: Float,
     private val child: UiNode,
     private val anchor: RootAnchor = RootAnchor.Center,
+    private val renderScale: Float = 1.0f,
 ) {
     private var originX = 0.0f
     private var originY = 0.0f
@@ -22,12 +23,13 @@ class FigmaRoot(
     fun layout(client: MinecraftClient = MinecraftClient.getInstance()) {
         val window = client.window
         val guiScale = window.scaleFactor.toFloat().coerceAtLeast(1.0f)
+        val rootScale = renderScale.coerceAtLeast(0.1f)
         val scaledWidth = window.scaledWidth.toFloat()
         val scaledHeight = window.scaledHeight.toFloat()
-        val logicalWidth = designWidth / guiScale
-        val logicalHeight = designHeight / guiScale
+        val logicalWidth = designWidth * rootScale / guiScale
+        val logicalHeight = designHeight * rootScale / guiScale
 
-        scale = 1.0f / guiScale
+        scale = rootScale / guiScale
         originX = when (anchor) {
             RootAnchor.TopLeft -> 0.0f
             RootAnchor.Center -> (scaledWidth - logicalWidth) * 0.5f
@@ -59,6 +61,18 @@ class FigmaRoot(
         return child.mouseClicked(localX, localY, button)
     }
 
+    fun mouseReleased(mouseX: Double, mouseY: Double, button: Int): Boolean {
+        val (localX, localY) = toFigmaLocal(mouseX, mouseY)
+        return child.mouseReleased(localX, localY, button)
+    }
+
+    fun mouseDragged(mouseX: Double, mouseY: Double, button: Int, deltaX: Double, deltaY: Double): Boolean {
+        val (localX, localY) = toFigmaLocal(mouseX, mouseY)
+        val localDeltaX = (deltaX.toFloat() / max(scale, 0.0001f))
+        val localDeltaY = (deltaY.toFloat() / max(scale, 0.0001f))
+        return child.mouseDragged(localX, localY, button, localDeltaX, localDeltaY)
+    }
+
     fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
         val (localX, localY) = toFigmaLocal(mouseX, mouseY)
         return child.mouseScrolled(
@@ -67,5 +81,13 @@ class FigmaRoot(
             horizontalAmount = horizontalAmount.toFloat(),
             verticalAmount = verticalAmount.toFloat(),
         )
+    }
+
+    fun keyPressed(keyCode: Int, scanCode: Int, modifiers: Int): Boolean {
+        return child.keyPressed(keyCode, scanCode, modifiers)
+    }
+
+    fun charTyped(chr: Char, modifiers: Int): Boolean {
+        return child.charTyped(chr, modifiers)
     }
 }
