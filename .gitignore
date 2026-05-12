@@ -1,0 +1,74 @@
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+build-check-*/
+build-deploy-check-*/
+build-runclient/
+build-runclient-*/
+out/
+bin/
+
+# Minecraft dev runtime
+run/
+
+# IDE / OS local files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Local agent / temporary output
+.claude/
+.tmp.driveupload/
+project_status.txtnpm
+
+# Logs / crash dumps
+*.log
+*.log.gz
+hs_err_pid*
+replay_pid*
+crash-reports/
+
+# Local credentials and API tokens
+.env
+.env.*
+!.env.example
+figma.properties
+*.local.properties
+local.properties
+
+# License / role system private material
+roles.json
+roles.dat
+hypnosia_roles.json
+hypnosia_roles.dat
+license-cache.json
+license-cache.dat
+license.properties
+install-id.dat
+hardware-fingerprint.txt
+/data/
+/license-server/data/
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.keystore
+id_rsa*
+id_ecdsa*
+id_ed25519*
+
+# Local exported / reference material
+_external/
+
+# Built artifacts
+*.jar
+*.zip
+*.tar
+*.tar.gz
+
+# Keep Gradle wrapper executable for reproducible builds
+!gradle/wrapper/gradle-wrapper.jar
