@@ -24,6 +24,8 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.fabricmc.api.ClientModInitializer
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
+import net.minecraft.text.Text
+import net.minecraft.util.Formatting
 import net.minecraft.util.Identifier
 import org.lwjgl.glfw.GLFW
 import org.slf4j.LoggerFactory
@@ -31,8 +33,12 @@ import org.slf4j.LoggerFactory
 object HypnosiaClient : ClientModInitializer {
     const val MOD_ID: String = "hypnosia"
     private val logger = LoggerFactory.getLogger(MOD_ID)
+    private const val SERVICE_WARNING_DELAY_MS = 5000L
 
     private lateinit var openMenuKey: KeyBinding
+    @Volatile private var serviceCheckStartedAtMs = 0L
+    @Volatile private var serviceCheckAvailable = false
+    @Volatile private var serviceWarningSent = false
 
     override fun onInitializeClient() {
         HypnosiaShaders.initialize()
@@ -90,9 +96,29 @@ object HypnosiaClient : ClientModInitializer {
             WorldVisualSettings.tick(client)
             ModuleHotkeys.tick(client)
             DiscordRpcManager.tick(client)
+            tickServiceWarning(client)
             while (openMenuKey.wasPressed()) {
                 client.setScreen(HypnosiaMenuScreen())
             }
         }
+    }
+
+    private fun tickServiceWarning(client: net.minecraft.client.MinecraftClient) {
+        if (serviceWarningSent || serviceCheckAvailable) return
+        if (serviceCheckStartedAtMs == 0L) {
+            serviceCheckStartedAtMs = System.currentTimeMillis()
+            AccountManager.checkServiceAvailableAsync().thenAccept { available ->
+                serviceCheckAvailable = available
+            }
+            return
+        }
+        if (System.currentTimeMillis() - serviceCheckStartedAtMs < SERVICE_WARNING_DELAY_MS) return
+        val player = client.player ?: return
+        serviceWarningSent = true
+        player.sendMessage(
+            Text.literal("Hypnosia: нет подключения к серверу или ведутся технические работы.")
+                .formatted(Formatting.RED),
+            false,
+        )
     }
 }

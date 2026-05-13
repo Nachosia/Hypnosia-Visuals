@@ -27,7 +27,7 @@ Install the required Fabric mods into the same `mods` folder as `hypnosia-0.8.1-
 
 ## Current Notes
 
-- If Hypnosia Cloud is offline or under maintenance, the menu shows a connection/maintenance screen with `Retry`.
+- If Hypnosia Cloud is offline or under maintenance for more than 5 seconds, the client shows a red chat warning.
 - Cloud/account features require access to the Hypnosia service.
 - Local HUD, visuals, and profile files are stored in the Minecraft instance, not in this repository.
 
