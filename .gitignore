@@ -2,6 +2,10 @@
 .gradle/
 .kotlin/
 build/
+build-check-*/
+build-deploy-check-*/
+build-runclient/
+build-runclient-*/
 out/
 bin/
 

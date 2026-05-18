@@ -7,6 +7,10 @@ repositories {
     mavenCentral()
 }
 
+providers.gradleProperty("hypnosiaBuildDir").orNull?.let { customBuildDir ->
+    layout.buildDirectory.set(rootProject.layout.projectDirectory.dir("$customBuildDir/license-admin"))
+}
+
 kotlin {
     jvmToolchain(21)
 }

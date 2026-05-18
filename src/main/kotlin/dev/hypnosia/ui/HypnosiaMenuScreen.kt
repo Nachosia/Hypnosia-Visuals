@@ -43,10 +43,13 @@ class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
     }
 
     override fun renderBackground(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
-        // Keep the world crisp behind the custom SDF shell: no vanilla blur, panorama, or darkening.
+        // Keep the world untouched here. Transparent/Liquid Glass must blur only the
+        // pixels behind themed surfaces, not darken the entire screen before capture.
     }
 
     override fun render(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
+        renderBackground(context, mouseX, mouseY, delta)
+
         val client = MinecraftClient.getInstance()
         val now = System.nanoTime()
         val frameSeconds = if (lastFrameNanos == 0L) {
@@ -66,6 +69,7 @@ class HypnosiaMenuScreen : Screen(Text.literal("Hypnosia")) {
         figmaMouseY = localMouseY
         UiInputState.update(localMouseX, localMouseY, frameSeconds)
 
+        dev.hypnosia.ui.render.HypnosiaRenderUtils.captureThemeBackdrop(context)
         rootLayout.render(context)
     }
 

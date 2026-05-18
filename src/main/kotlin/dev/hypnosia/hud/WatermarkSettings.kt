@@ -1,8 +1,6 @@
 package dev.hypnosia.hud
 
-import dev.hypnosia.license.HypnosiaPaths
-import java.nio.file.Files
-import java.util.Properties
+import dev.hypnosia.config.HypnosiaClientSettings
 
 object WatermarkSettings {
     enum class Version {
@@ -21,7 +19,7 @@ object WatermarkSettings {
         CPU("cpu", "CPU"),
     }
 
-    private const val FILE_NAME = "watermark.properties"
+    private const val KEY_PREFIX = "watermark."
     private const val VERSION_KEY = "version"
     private val values = linkedMapOf<Module, Boolean>().apply {
         Module.entries.forEach { put(it, true) }
@@ -59,33 +57,34 @@ object WatermarkSettings {
         setEnabled(module, !isEnabled(module))
     }
 
+    fun reload() {
+        loaded = false
+        version = Version.V2
+        Module.entries.forEach { values[it] = true }
+        ensureLoaded()
+    }
+
     private fun ensureLoaded() {
         if (loaded) return
         loaded = true
         runCatching {
-            val file = HypnosiaPaths.rootFile(FILE_NAME)
-            if (!Files.exists(file)) {
-                save()
-                return@runCatching
-            }
-            val props = Properties()
-            Files.newInputStream(file).use(props::load)
-            version = runCatching { Version.valueOf(props.getProperty(VERSION_KEY, Version.V2.name)) }.getOrDefault(Version.V2)
+            version = runCatching {
+                Version.valueOf(HypnosiaClientSettings.string(KEY_PREFIX + VERSION_KEY, Version.V2.name))
+            }.getOrDefault(Version.V2)
             Module.entries.forEach { module ->
-                values[module] = props.getProperty(module.key, "true").toBooleanStrictOrNull() ?: true
+                values[module] = HypnosiaClientSettings.boolean(KEY_PREFIX + module.key, true)
             }
         }
     }
 
     private fun save() {
         runCatching {
-            val file = HypnosiaPaths.rootFile(FILE_NAME)
-            val props = Properties()
-            props[VERSION_KEY] = version.name
+            val valuesToSave = linkedMapOf<String, String>()
+            valuesToSave[KEY_PREFIX + VERSION_KEY] = version.name
             Module.entries.forEach { module ->
-                props[module.key] = (values[module] == true).toString()
+                valuesToSave[KEY_PREFIX + module.key] = (values[module] == true).toString()
             }
-            Files.newOutputStream(file).use { props.store(it, "Hypnosia watermark settings") }
+            HypnosiaClientSettings.setAll(valuesToSave)
         }
     }
 }

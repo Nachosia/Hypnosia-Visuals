@@ -14,6 +14,16 @@ plugins {
 version = property("mod_version") as String
 group = property("maven_group") as String
 
+val requestedTaskNames = gradle.startParameter.taskNames.map { it.lowercase() }
+val defaultBuildDir = when {
+    providers.gradleProperty("hypnosiaBuildDir").isPresent -> providers.gradleProperty("hypnosiaBuildDir").get()
+    requestedTaskNames.any { it.contains("runclient") } -> "build-runclient-local-${System.currentTimeMillis()}"
+    else -> null
+}
+defaultBuildDir?.let { customBuildDir ->
+    layout.buildDirectory.set(layout.projectDirectory.dir(customBuildDir))
+}
+
 base {
     archivesName.set(property("archives_base_name") as String)
 }

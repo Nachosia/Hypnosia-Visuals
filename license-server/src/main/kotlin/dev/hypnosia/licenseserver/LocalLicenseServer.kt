@@ -3,6 +3,8 @@ package dev.hypnosia.licenseserver
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -39,6 +41,12 @@ private const val SPONSOR_CLOUD_CONFIGS_PER_ACCOUNT = 15
 private const val STAFF_CLOUD_CONFIGS_PER_ACCOUNT = 100
 private const val DEFAULT_USER_CLOUD_COOLDOWN_SECONDS = 15
 private const val MAX_CLOUD_CONFIG_PAYLOAD_BYTES = 64 * 1024
+private const val MAX_CLOUD_CONFIG_REQUEST_CHARS = 128 * 1024
+private const val CLOUD_CONFIG_FORMAT = "hypnosia-config"
+private const val CLOUD_CONFIG_VERSION = 1
+private const val MAX_CLOUD_CONFIG_SETTINGS = 256
+private const val MAX_CLOUD_CONFIG_SETTING_KEY_LENGTH = 96
+private const val MAX_CLOUD_CONFIG_SETTING_VALUE_LENGTH = 512
 private const val ONLINE_TTL_SECONDS = 90L
 
 private val defaultRoles = setOf("USER", "SPONSOR", "QA", "ADMIN", "OWNER")
@@ -46,7 +54,9 @@ private val roleRegex = Regex("^[A-Z][A-Z0-9_]{1,31}$")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
 private val accountKeyRegex = Regex("^[A-Z0-9]{32}$")
 private val cloudConfigKeyRegex = Regex("^[A-Z0-9]{8}$")
+private val cloudConfigNameRegex = Regex("""^[\p{L}\p{N} _.-]{1,48}$""")
 private val hwidHashRegex = Regex("^[A-Fa-f0-9]{64}$")
+private val cloudConfigManagedPrefixes = listOf("hud.", "watermark.", "target.", "hotkeys.", "module.", "world.", "visuals.", "other.", "icons.", "theme.")
 
 fun main(args: Array<String>) {
     val host = env("HYPNOSIA_LICENSE_HOST") ?: DEFAULT_HOST
@@ -1179,16 +1189,21 @@ private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
     if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
     val body = exchange.bodyString()
+    if (body.length > MAX_CLOUD_CONFIG_REQUEST_CHARS) return json(exchange, 200, apiError("REQUEST_TOO_LARGE"))
     val account = accountFromBodyOrCreate(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
     if (account.cloudUploadBanned) return json(exchange, 200, apiError("CLOUD_UPLOAD_BANNED"))
     val ownerLicenseKey = jsonString(body, "license")?.trim()?.uppercase(Locale.ROOT)?.takeIf { licenseRegex.matches(it) }
-    val name = jsonString(body, "name")?.trim()?.take(64)?.takeIf { it.isNotBlank() } ?: "Shared config"
+    val name = normalizeCloudConfigName(jsonString(body, "name") ?: "Shared config")
+        ?: return json(exchange, 200, apiError("CONFIG_NAME_FORMAT"))
     val payloadBase64 = jsonString(body, "payloadBase64")?.trim()
     if (payloadBase64 == null) return json(exchange, 200, apiError("PAYLOAD_MISSING"))
 
     val payloadBytes = runCatching { Base64.getDecoder().decode(payloadBase64) }.getOrNull()
     if (payloadBytes == null || payloadBytes.isEmpty()) return json(exchange, 200, apiError("PAYLOAD_FORMAT"))
     if (payloadBytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) return json(exchange, 200, apiError("PAYLOAD_TOO_LARGE"))
+    val safePayloadBytes = canonicalizeCloudConfigPayload(payloadBytes)
+        ?: return json(exchange, 200, apiError("PAYLOAD_SCHEMA_INVALID"))
+    val safePayloadBase64 = Base64.getEncoder().encodeToString(safePayloadBytes)
 
     val roles = accountRoles(account, state)
     val roleSettings = roleSettingsForRoles(roles, state)
@@ -1196,7 +1211,7 @@ private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
         is RateLimitResult.Limited -> return json(exchange, 200, rateLimitJson(limit.retryAfterSeconds))
         RateLimitResult.Allowed -> Unit
     }
-    when (val result = state.cloudConfigs.create(account, ownerLicenseKey, name, payloadBase64, roleSettings.cloudLimit)) {
+    when (val result = state.cloudConfigs.create(account, ownerLicenseKey, name, safePayloadBase64, roleSettings.cloudLimit)) {
         is CloudConfigCreateResult.Created -> {
             json(
                 exchange,
@@ -1292,6 +1307,264 @@ private fun pollNotifications(exchange: HttpExchange, state: ServerState) {
         """{"id":${record.id},"message":"${jsonEscape(record.message)}","createdAt":"${record.createdAt}"}"""
     }
     json(exchange, 200, """{"ok":true,"notifications":[$items]}""")
+}
+
+private fun normalizeCloudConfigName(value: String): String? {
+    val raw = value.trim()
+    val withoutExtension = if (raw.endsWith(".json", ignoreCase = true)) raw.dropLast(5) else raw
+    val normalized = withoutExtension.trim(' ', '.')
+    if (normalized.isBlank() || normalized == "." || normalized == "..") return null
+    if (normalized.any { it == '/' || it == '\\' || it == ':' || it == '\u0000' }) return null
+    return normalized.takeIf { cloudConfigNameRegex.matches(it) }
+}
+
+private fun validCloudConfigPayload(bytes: ByteArray): Boolean {
+    if (bytes.isEmpty() || bytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) return false
+    val text = decodeUtf8Strict(bytes) ?: return false
+    return looksLikeJsonObject(text) &&
+        text.contains("\"format\"") &&
+        text.contains("\"hypnosia-config\"")
+}
+
+private fun canonicalizeCloudConfigPayload(bytes: ByteArray): ByteArray? {
+    if (bytes.isEmpty() || bytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) return null
+    val text = decodeUtf8Strict(bytes) ?: return null
+    if (!looksLikeJsonObject(text)) return null
+    if (!text.contains("\"format\"") || !text.contains("\"$CLOUD_CONFIG_FORMAT\"")) return null
+    val settingsBody = cloudConfigSettingsObjectBody(text) ?: return null
+    val settings = sanitizeCloudConfigSettings(decodeCloudConfigStringMap(settingsBody))
+    return encodeCloudConfig(settings).toByteArray(StandardCharsets.UTF_8)
+}
+
+private fun sanitizeCloudConfigSettings(settings: Map<String, String>): Map<String, String> {
+    val sanitized = linkedMapOf<String, String>()
+    settings.entries
+        .asSequence()
+        .filter { (key, value) -> validCloudConfigSettingKey(key) && validCloudConfigSettingValue(value) }
+        .sortedBy { it.key }
+        .take(MAX_CLOUD_CONFIG_SETTINGS)
+        .forEach { (key, value) -> sanitized[key] = value }
+    return sanitized
+}
+
+private fun validCloudConfigSettingKey(key: String): Boolean =
+    key.length in 1..MAX_CLOUD_CONFIG_SETTING_KEY_LENGTH &&
+        key.all { it.code in 0x21..0x7E } &&
+        cloudConfigManagedPrefixes.any { prefix -> key.startsWith(prefix) }
+
+private fun validCloudConfigSettingValue(value: String): Boolean =
+    value.length <= MAX_CLOUD_CONFIG_SETTING_VALUE_LENGTH && value.none { it.code < 0x20 || it == '\u007F' }
+
+private fun encodeCloudConfig(settings: Map<String, String>): String {
+    val body = settings.entries.joinToString(",\n") { (key, value) ->
+        "    \"${jsonEscape(key)}\": \"${jsonEscape(value)}\""
+    }
+    val settingsBlock = if (body.isBlank()) "" else "\n$body\n  "
+    return buildString {
+        append("{\n")
+        append("  \"format\": \"").append(CLOUD_CONFIG_FORMAT).append("\",\n")
+        append("  \"version\": ").append(CLOUD_CONFIG_VERSION).append(",\n")
+        append("  \"settings\": {").append(settingsBlock).append("}\n")
+        append("}\n")
+    }
+}
+
+private fun cloudConfigSettingsObjectBody(json: String): String? {
+    val keyIndex = json.indexOf("\"settings\"")
+    if (keyIndex < 0) return null
+    val start = json.indexOf('{', keyIndex)
+    if (start < 0) return null
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (i in start until json.length) {
+        val c = json[i]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (c == '\\') {
+                escaped = true
+            } else if (c == '"') {
+                inString = false
+            }
+            continue
+        }
+        when (c) {
+            '"' -> inString = true
+            '{' -> depth++
+            '}' -> {
+                depth--
+                if (depth == 0) return json.substring(start + 1, i)
+            }
+        }
+    }
+    return null
+}
+
+private fun decodeCloudConfigStringMap(body: String): Map<String, String> {
+    val result = linkedMapOf<String, String>()
+    var index = 0
+    while (index < body.length) {
+        val keyStart = body.indexOf('"', index)
+        if (keyStart < 0) break
+        val keyEnd = findCloudConfigStringEnd(body, keyStart + 1) ?: break
+        val colon = body.indexOf(':', keyEnd + 1)
+        if (colon < 0) break
+        val valueStart = body.indexOf('"', colon + 1)
+        if (valueStart < 0) break
+        val valueEnd = findCloudConfigStringEnd(body, valueStart + 1) ?: break
+        result[body.substring(keyStart + 1, keyEnd).jsonUnescape()] =
+            body.substring(valueStart + 1, valueEnd).jsonUnescape()
+        index = valueEnd + 1
+    }
+    return result
+}
+
+private fun findCloudConfigStringEnd(value: String, start: Int): Int? {
+    var escaped = false
+    for (i in start until value.length) {
+        val c = value[i]
+        if (escaped) {
+            escaped = false
+        } else if (c == '\\') {
+            escaped = true
+        } else if (c == '"') {
+            return i
+        }
+    }
+    return null
+}
+
+private fun decodeUtf8Strict(bytes: ByteArray): String? {
+    return runCatching {
+        StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+    }.getOrNull()
+}
+
+private fun looksLikeJsonObject(text: String): Boolean {
+    return JsonShapeParser(text).parseRootObject()
+}
+
+private class JsonShapeParser(private val text: String) {
+    private var index = 0
+
+    fun parseRootObject(): Boolean {
+        skipWhitespace()
+        if (!parseObject()) return false
+        skipWhitespace()
+        return index == text.length
+    }
+
+    private fun parseValue(): Boolean {
+        skipWhitespace()
+        if (index >= text.length) return false
+        return when (text[index]) {
+            '{' -> parseObject()
+            '[' -> parseArray()
+            '"' -> parseString()
+            't' -> consumeLiteral("true")
+            'f' -> consumeLiteral("false")
+            'n' -> consumeLiteral("null")
+            '-', in '0'..'9' -> parseNumber()
+            else -> false
+        }
+    }
+
+    private fun parseObject(): Boolean {
+        if (!consume('{')) return false
+        skipWhitespace()
+        if (consume('}')) return true
+        while (true) {
+            skipWhitespace()
+            if (!parseString()) return false
+            skipWhitespace()
+            if (!consume(':')) return false
+            if (!parseValue()) return false
+            skipWhitespace()
+            if (consume('}')) return true
+            if (!consume(',')) return false
+        }
+    }
+
+    private fun parseArray(): Boolean {
+        if (!consume('[')) return false
+        skipWhitespace()
+        if (consume(']')) return true
+        while (true) {
+            if (!parseValue()) return false
+            skipWhitespace()
+            if (consume(']')) return true
+            if (!consume(',')) return false
+        }
+    }
+
+    private fun parseString(): Boolean {
+        if (!consume('"')) return false
+        while (index < text.length) {
+            val char = text[index++]
+            when {
+                char == '"' -> return true
+                char.code < 0x20 -> return false
+                char == '\\' -> {
+                    if (index >= text.length) return false
+                    when (text[index++]) {
+                        '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> Unit
+                        'u' -> repeat(4) {
+                            if (index >= text.length || text[index++] !in '0'..'9' && text[index - 1] !in 'a'..'f' && text[index - 1] !in 'A'..'F') {
+                                return false
+                            }
+                        }
+                        else -> return false
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    private fun parseNumber(): Boolean {
+        if (consume('-') && index >= text.length) return false
+        if (consume('0')) {
+            if (index < text.length && text[index] in '0'..'9') return false
+        } else if (!consumeDigits()) {
+            return false
+        }
+        if (consume('.')) {
+            if (!consumeDigits()) return false
+        }
+        if (index < text.length && (text[index] == 'e' || text[index] == 'E')) {
+            index++
+            if (index < text.length && (text[index] == '+' || text[index] == '-')) index++
+            if (!consumeDigits()) return false
+        }
+        return true
+    }
+
+    private fun consumeDigits(): Boolean {
+        val start = index
+        while (index < text.length && text[index] in '0'..'9') index++
+        return index > start
+    }
+
+    private fun consumeLiteral(literal: String): Boolean {
+        if (!text.regionMatches(index, literal, 0, literal.length)) return false
+        index += literal.length
+        return true
+    }
+
+    private fun consume(char: Char): Boolean {
+        if (index >= text.length || text[index] != char) return false
+        index++
+        return true
+    }
+
+    private fun skipWhitespace() {
+        while (index < text.length && text[index].isWhitespace()) index++
+    }
 }
 
 private fun requireAccount(body: String, state: ServerState): AccountRecord? {
@@ -1531,8 +1804,40 @@ private fun HttpExchange.bodyString(): String {
 }
 
 private fun jsonString(json: String, name: String): String? {
-    val pattern = Regex(""""${Regex.escape(name)}"\s*:\s*"((?:\\.|[^"\\])*)"""")
-    return pattern.find(json)?.groupValues?.getOrNull(1)?.jsonUnescape()
+    val key = "\"$name\""
+    var searchFrom = 0
+    while (true) {
+        val keyIndex = json.indexOf(key, searchFrom)
+        if (keyIndex < 0) return null
+        var index = keyIndex + key.length
+        while (index < json.length && json[index].isWhitespace()) index++
+        if (index >= json.length || json[index] != ':') {
+            searchFrom = keyIndex + key.length
+            continue
+        }
+        index++
+        while (index < json.length && json[index].isWhitespace()) index++
+        if (index + 4 <= json.length && json.regionMatches(index, "null", 0, 4)) return null
+        if (index >= json.length || json[index] != '"') return null
+        val valueStart = index + 1
+        val valueEnd = findJsonStringEnd(json, valueStart) ?: return null
+        return json.substring(valueStart, valueEnd).jsonUnescape()
+    }
+}
+
+private fun findJsonStringEnd(value: String, start: Int): Int? {
+    var escaped = false
+    for (i in start until value.length) {
+        val c = value[i]
+        if (escaped) {
+            escaped = false
+        } else if (c == '\\') {
+            escaped = true
+        } else if (c == '"') {
+            return i
+        }
+    }
+    return null
 }
 
 private fun text(exchange: HttpExchange, code: Int, body: String) {

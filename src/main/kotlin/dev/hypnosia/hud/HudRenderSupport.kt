@@ -1,10 +1,9 @@
 package dev.hypnosia.hud
 
 import dev.hypnosia.HypnosiaClient
-import dev.hypnosia.ui.layout.Rect
 import dev.hypnosia.ui.render.FigmaTextRenderer
+import dev.hypnosia.ui.render.HighQualityTextRenderer
 import dev.hypnosia.ui.render.HypnosiaRenderUtils
-import dev.hypnosia.ui.render.HypnosiaScissor
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.util.Identifier
@@ -97,19 +96,26 @@ object HudRenderSupport {
             else -> overflow
         }
 
-        HypnosiaScissor.withLocalRect(context, Rect(x, y, width, height)) {
-            FigmaTextRenderer.drawInBox(
-                context = context,
-                text = value,
-                x = x - offset,
+        FigmaTextRenderer.drawInBox(
+            context = context,
+            text = value,
+            x = x - offset,
+            y = y,
+            width = textWidth + 2.0f,
+            height = height,
+            color = color,
+            style = style,
+            horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
+            verticalAlign = FigmaTextRenderer.VerticalAlign.Center,
+            fade = HighQualityTextRenderer.TextFade(
+                x = x - TEXT_FADE_EDGE_PAD,
                 y = y,
-                width = textWidth + 2.0f,
+                width = width + TEXT_FADE_EDGE_PAD * 2.0f,
                 height = height,
-                color = color,
-                style = style,
-                horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
-                verticalAlign = FigmaTextRenderer.VerticalAlign.Center,
-            )
-        }
+                fadeWidth = 12.0f,
+            ),
+        )
     }
+
+    private const val TEXT_FADE_EDGE_PAD = 3.0f
 }

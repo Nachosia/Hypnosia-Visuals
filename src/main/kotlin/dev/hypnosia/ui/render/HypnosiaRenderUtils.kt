@@ -4,8 +4,13 @@ import com.mojang.blaze3d.buffers.GpuBuffer
 import com.mojang.blaze3d.pipeline.RenderPipeline
 import com.mojang.blaze3d.systems.ProjectionType
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.textures.AddressMode
+import com.mojang.blaze3d.textures.FilterMode
+import com.mojang.blaze3d.textures.GpuTexture
 import com.mojang.blaze3d.textures.GpuTextureView
 import com.mojang.blaze3d.vertex.VertexFormat
+import dev.hypnosia.config.IconSettings
+import dev.hypnosia.config.ThemeSettings
 import dev.hypnosia.render.HypnosiaShaders
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gl.GpuSampler
@@ -26,6 +31,7 @@ import java.util.OptionalDouble
 import java.util.OptionalInt
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.round
 
 object HypnosiaRenderUtils {
     private const val GUI_MODEL_VIEW_Z = -11000.0f
@@ -33,13 +39,224 @@ object HypnosiaRenderUtils {
     private const val BOX_UNIFORM_BYTES = 48
     private const val SHADOW_BOX_UNIFORM_BYTES = 48
     private const val GRADIENT_BOX_UNIFORM_BYTES = 80
+    private const val GLASS_BOX_UNIFORM_BYTES = 80
     private const val HSV_CANVAS_UNIFORM_BYTES = 16
     private const val HUE_STRIP_UNIFORM_BYTES = 16
     private const val ALPHA_STRIP_UNIFORM_BYTES = 32
     private const val TEXTURE_BOX_UNIFORM_BYTES = 32
     private val guiProjection = ProjectionMatrix2("hypnosia_gui", 1000.0f, 11000.0f, true)
+    private var backdropTexture: GpuTexture? = null
+    private var backdropView: GpuTextureView? = null
+    private var backdropWidth = 0
+    private var backdropHeight = 0
+    private var backdropReady = false
+    private var backdropSampler: GpuSampler? = null
+
+    fun captureThemeBackdrop(context: DrawContext) {
+        backdropReady = false
+        if (!ThemeSettings.enabled) return
+        if (ThemeSettings.mode() != ThemeSettings.Mode.TRANSPARENT && !ThemeSettings.glassActive()) return
+
+        context.draw()
+
+        val framebuffer = MinecraftClient.getInstance().framebuffer
+        val width = framebuffer.textureWidth
+        val height = framebuffer.textureHeight
+        if (width <= 0 || height <= 0) return
+        if (!ensureBackdropTexture(width, height)) return
+
+        val target = backdropTexture ?: return
+        runCatching {
+            RenderSystem.getDevice()
+                .createCommandEncoder()
+                .copyTextureToTexture(
+                    framebuffer.getColorAttachment(),
+                    target,
+                    0,
+                    0,
+                    0,
+                    0,
+                    width,
+                    height,
+                    0,
+                )
+        }.onSuccess {
+            backdropReady = true
+        }.onFailure {
+            backdropReady = false
+        }
+    }
+
+    private fun ensureBackdropTexture(width: Int, height: Int): Boolean {
+        val existing = backdropTexture
+        if (
+            existing != null &&
+            !existing.isClosed() &&
+            backdropView?.isClosed() == false &&
+            backdropWidth == width &&
+            backdropHeight == height
+        ) {
+            return true
+        }
+
+        closeBackdropTexture()
+
+        val sourceFormat = MinecraftClient.getInstance().framebuffer.getColorAttachment()?.getFormat() ?: return false
+        return runCatching {
+            val texture = RenderSystem.getDevice().createTexture(
+                "Hypnosia theme backdrop",
+                GpuTexture.USAGE_COPY_DST or GpuTexture.USAGE_TEXTURE_BINDING,
+                sourceFormat,
+                width,
+                height,
+                1,
+                1,
+            )
+            backdropTexture = texture
+            backdropView = RenderSystem.getDevice().createTextureView(texture)
+            backdropWidth = width
+            backdropHeight = height
+        }.isSuccess
+    }
+
+    private fun closeBackdropTexture() {
+        runCatching { backdropView?.close() }
+        runCatching { backdropTexture?.close() }
+        backdropView = null
+        backdropTexture = null
+        backdropWidth = 0
+        backdropHeight = 0
+        backdropReady = false
+    }
+
+    private fun backdropSampler(): GpuSampler? {
+        backdropSampler?.let { return it }
+        return runCatching {
+            RenderSystem.getDevice().createSampler(
+                AddressMode.CLAMP_TO_EDGE,
+                AddressMode.CLAMP_TO_EDGE,
+                FilterMode.LINEAR,
+                FilterMode.LINEAR,
+                1,
+                OptionalDouble.empty(),
+            )
+        }.getOrNull()?.also {
+            backdropSampler = it
+        }
+    }
 
     fun drawFigmaBox(
+        context: DrawContext,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        radius: Float,
+        bgColor: Int,
+        strokeColor: Int = 0x00000000,
+        strokeThickness: Float = 0.0f,
+        flushDeferredBeforeDraw: Boolean = true,
+    ) {
+        if (width <= 0.0f || height <= 0.0f) {
+            return
+        }
+
+        drawFigmaBoxRaw(
+            context = context,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            radius = radius,
+            bgColor = bgColor,
+            strokeColor = strokeColor,
+            strokeThickness = strokeThickness,
+            flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+        )
+    }
+
+    fun drawThemedBox(
+        context: DrawContext,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        radius: Float,
+        bgColor: Int,
+        strokeColor: Int = 0x00000000,
+        strokeThickness: Float = 0.0f,
+        role: ThemeSettings.ThemeRole = ThemeSettings.ThemeRole.CARD,
+        flushDeferredBeforeDraw: Boolean = true,
+    ) {
+        if (width <= 0.0f || height <= 0.0f) {
+            return
+        }
+
+        val themed = ThemeSettings.surface(role, bgColor, strokeColor)
+        if (themed != null) {
+            if (themed.liquidGlass) {
+                LiquidGlassSurface.draw(
+                    context = context,
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                    radius = radius,
+                    bgColor = themed.bgColor,
+                    strokeColor = themed.strokeColor,
+                    sourceStrokeColor = strokeColor,
+                    strokeThickness = strokeThickness,
+                    role = role,
+                    intensity = themed.glassStrength,
+                    flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+                )
+            } else if (themed.useGradient) {
+                drawLinearGradientBox(
+                    context = context,
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                    radius = radius,
+                    startColor = themed.gradientStart,
+                    endColor = themed.gradientEnd,
+                    angleDegrees = 135.0f,
+                    strokeColor = themed.strokeColor,
+                    strokeThickness = strokeThickness,
+                    flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+                )
+            } else {
+                drawFigmaBoxRaw(
+                    context = context,
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                    radius = radius,
+                    bgColor = themed.bgColor,
+                    strokeColor = themed.strokeColor,
+                    strokeThickness = strokeThickness,
+                    flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+                )
+            }
+            return
+        }
+
+        drawFigmaBoxRaw(
+            context = context,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            radius = radius,
+            bgColor = bgColor,
+            strokeColor = strokeColor,
+            strokeThickness = strokeThickness,
+            flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+        )
+    }
+
+    private fun drawFigmaBoxRaw(
         context: DrawContext,
         x: Float,
         y: Float,
@@ -217,6 +434,68 @@ object HypnosiaRenderUtils {
         )
     }
 
+    fun drawLiquidGlassBox(
+        context: DrawContext,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        radius: Float,
+        bgColor: Int,
+        strokeColor: Int,
+        strokeThickness: Float = 1.0f,
+        strength: Float = 0.85f,
+        distortion: Float = 0.0f,
+        blurRadius: Float = 18.0f,
+        flushDeferredBeforeDraw: Boolean = true,
+    ) {
+        val backdropView = backdropView
+        val backdropSampler = backdropSampler()
+        if (!backdropReady || backdropView == null || backdropView.isClosed() || backdropSampler == null) {
+            drawFigmaBoxRaw(
+                context = context,
+                x = x,
+                y = y,
+                width = width,
+                height = height,
+                radius = radius,
+                bgColor = bgColor,
+                strokeColor = strokeColor,
+                strokeThickness = strokeThickness,
+                flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+            )
+            return
+        }
+
+        val safeRadius = radius.coerceIn(0.0f, min(width, height) * 0.5f)
+        val safeStroke = strokeThickness.coerceIn(0.0f, max(0.0f, min(width, height) * 0.5f))
+        val uniform = createGlassBoxUniformBuffer(
+            width = width,
+            height = height,
+            radius = safeRadius,
+            strokeThickness = safeStroke,
+            bgColor = bgColor,
+            strokeColor = strokeColor,
+            strength = strength,
+            distortion = distortion,
+            blurRadius = blurRadius,
+        )
+        drawUniformQuad(
+            context = context,
+            debugName = "Hypnosia SDF liquid glass box",
+            pipeline = HypnosiaShaders.SDF_LIQUID_GLASS_BOX,
+            uniformName = "HypnosiaGlassBox",
+            uniformBuffer = uniform,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            textureView = backdropView,
+            sampler = backdropSampler,
+            flushDeferredBeforeDraw = flushDeferredBeforeDraw,
+        )
+    }
+
     fun drawHsvColorCanvas(
         context: DrawContext,
         x: Float,
@@ -303,6 +582,11 @@ object HypnosiaRenderUtils {
         tintColor: Int = 0xFFFFFFFF.toInt(),
         flushDeferredBeforeDraw: Boolean = true,
     ) {
+        if (IconSettings.shouldSkip(identifier)) return
+        val themedTint = ThemeSettings.resolveIconTint(
+            identifierPath = identifier.path,
+            color = IconSettings.tint(identifier, tintColor),
+        )
         drawTexture(
             context = context,
             identifier = identifier,
@@ -311,7 +595,7 @@ object HypnosiaRenderUtils {
             width = width,
             height = height,
             radius = radius,
-            tintColor = tintColor,
+            tintColor = themedTint,
             iconMaskMode = false,
             flushDeferredBeforeDraw = flushDeferredBeforeDraw,
         )
@@ -327,15 +611,26 @@ object HypnosiaRenderUtils {
         tintColor: Int = 0xFFFFFFFF.toInt(),
         flushDeferredBeforeDraw: Boolean = true,
     ) {
+        if (IconSettings.shouldSkip(identifier)) return
+        val themedTint = ThemeSettings.resolveIconTint(
+            identifierPath = identifier.path,
+            color = IconSettings.tint(identifier, tintColor),
+        )
+        // Snap icon quads to whole screen pixels to avoid subpixel texture blur.
+        val snappedX = round(x)
+        val snappedY = round(y)
+        val snappedW = round(width)
+        val snappedH = round(height)
+
         drawTexture(
             context = context,
             identifier = identifier,
-            x = x,
-            y = y,
-            width = width,
-            height = height,
+            x = snappedX,
+            y = snappedY,
+            width = snappedW,
+            height = snappedH,
             radius = 0.0f,
-            tintColor = tintColor,
+            tintColor = themedTint,
             iconMaskMode = true,
             flushDeferredBeforeDraw = flushDeferredBeforeDraw,
         )
@@ -637,6 +932,33 @@ object HypnosiaRenderUtils {
         putRgba(bytes, strokeColor)
         bytes.flip()
         return createUniformBuffer("Hypnosia gradient box uniforms", bytes)
+    }
+
+    private fun createGlassBoxUniformBuffer(
+        width: Float,
+        height: Float,
+        radius: Float,
+        strokeThickness: Float,
+        bgColor: Int,
+        strokeColor: Int,
+        strength: Float,
+        distortion: Float,
+        blurRadius: Float,
+    ): GpuBuffer {
+        val bytes = ByteBuffer.allocateDirect(GLASS_BOX_UNIFORM_BYTES).order(ByteOrder.nativeOrder())
+        bytes.putFloat(width)
+        bytes.putFloat(height)
+        bytes.putFloat(radius)
+        bytes.putFloat(strokeThickness)
+        putRgba(bytes, bgColor)
+        putRgba(bytes, strokeColor)
+        putRgba(bytes, 0xEFFFFFFF.toInt())
+        bytes.putFloat((System.nanoTime() % 100_000_000_000L).toFloat() / 1_000_000_000.0f)
+        bytes.putFloat(strength.coerceIn(0.0f, 1.0f))
+        bytes.putFloat(distortion.coerceIn(0.0f, 1.0f))
+        bytes.putFloat(blurRadius.coerceIn(4.0f, 48.0f))
+        bytes.flip()
+        return createUniformBuffer("Hypnosia glass box uniforms", bytes)
     }
 
     private fun createHsvCanvasUniformBuffer(width: Float, height: Float, radius: Float, hueDegrees: Float): GpuBuffer {

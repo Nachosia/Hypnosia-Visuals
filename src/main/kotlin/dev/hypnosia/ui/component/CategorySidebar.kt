@@ -1,6 +1,7 @@
 package dev.hypnosia.ui.component
 
 import dev.hypnosia.HypnosiaClient
+import dev.hypnosia.config.ThemeSettings
 import dev.hypnosia.ui.animation.SpringColor
 import dev.hypnosia.ui.animation.SpringFloat
 import dev.hypnosia.ui.layout.BaseUiNode
@@ -95,7 +96,7 @@ class CategorySidebar(
             val visualSize = BUTTON_SIZE + (HOVER_BUTTON_SIZE - BUTTON_SIZE) * hover
             val iconScale = 1.0f + (HOVER_BUTTON_SIZE / BUTTON_SIZE - 1.0f) * hover
 
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = visualX,
                 y = visualY,
@@ -105,6 +106,7 @@ class CategorySidebar(
                 bgColor = background.update(seconds),
                 strokeColor = stroke.update(seconds),
                 strokeThickness = strokeWidth.update(seconds),
+                role = ThemeSettings.ThemeRole.ICON_BUTTON,
             )
 
             HypnosiaRenderUtils.drawIconTexture(

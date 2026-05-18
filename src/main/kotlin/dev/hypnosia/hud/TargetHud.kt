@@ -3,6 +3,7 @@ package dev.hypnosia.hud
 import dev.hypnosia.HypnosiaClient
 import dev.hypnosia.ui.render.FigmaTextRenderer
 import dev.hypnosia.ui.render.HypnosiaRenderUtils
+import dev.hypnosia.other.StreamerModeSettings
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements
 import net.minecraft.client.MinecraftClient
@@ -53,6 +54,7 @@ object TargetHud {
         val isChatOpen = client.currentScreen is ChatScreen
         val isMouseDown = GLFW.glfwGetMouseButton(window.handle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS
         if (!isChatOpen || client.player == null || !TargetHudSettings.isEnabled()) {
+            if (activeDrag != null || activeModelDrag != null) TargetHudSettings.saveNow()
             activeDrag = null
             activeModelDrag = null
             wasMouseDown = isMouseDown
@@ -89,8 +91,8 @@ object TargetHud {
             activeModelDrag?.let { drag ->
                 val dx = mouseX - drag.lastX
                 val dy = mouseY - drag.lastY
-                TargetHudSettings.setModelYaw(state.modelYaw + dx * 1.2f)
-                TargetHudSettings.setModelPitch(state.modelPitch - dy * 0.8f)
+                TargetHudSettings.setModelYaw(state.modelYaw + dx * 1.2f, persist = false)
+                TargetHudSettings.setModelPitch(state.modelPitch - dy * 0.8f, persist = false)
                 activeModelDrag = drag.copy(lastX = mouseX, lastY = mouseY)
                 wasMouseDown = isMouseDown
                 return
@@ -100,9 +102,10 @@ object TargetHud {
                 val maxY = (screenH - drag.height).coerceAtLeast(1.0f)
                 val snappedX = HudRenderSupport.snapPixel(mouseX - drag.offsetX).coerceIn(0.0f, maxX)
                 val snappedY = HudRenderSupport.snapPixel(mouseY - drag.offsetY).coerceIn(0.0f, maxY)
-                TargetHudSettings.setPosition(snappedX / maxX, snappedY / maxY)
+                TargetHudSettings.setPosition(snappedX / maxX, snappedY / maxY, persist = false)
             }
         } else {
+            if (activeDrag != null || activeModelDrag != null) TargetHudSettings.saveNow()
             activeDrag = null
             activeModelDrag = null
         }
@@ -453,8 +456,10 @@ object TargetHud {
     }
 
     private fun targetName(target: LivingEntity): String =
-        (target as? AbstractClientPlayerEntity)?.gameProfile?.name
-            ?: target.name.string
+        StreamerModeSettings.displayName(
+            (target as? AbstractClientPlayerEntity)?.gameProfile?.name
+                ?: target.name.string,
+        )
 
     private fun healthSmall(target: LivingEntity): String =
         String.format(Locale.US, "%.1f", target.health).removeSuffix(".0")

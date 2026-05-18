@@ -1,16 +1,17 @@
 package dev.hypnosia.hud
 
-import dev.hypnosia.license.HypnosiaPaths
+import dev.hypnosia.config.HypnosiaClientSettings
+import dev.hypnosia.other.FriendsManager
+import dev.hypnosia.world.WorldVisualSettings
 import net.minecraft.client.MinecraftClient
 import org.lwjgl.glfw.GLFW
-import java.nio.file.Files
-import java.util.Properties
 
 object ModuleHotkeys {
-    private const val FILE_NAME = "module-hotkeys.properties"
+    private const val KEY_PREFIX = "hotkeys."
     private val bindings = linkedMapOf<String, Binding>()
     private val pressed = mutableMapOf<Int, Boolean>()
     private val genericEnabled = mutableMapOf<String, Boolean>()
+    private var cachedActiveBindings: List<Binding>? = null
     private var loaded = false
 
     data class Binding(
@@ -22,12 +23,14 @@ object ModuleHotkeys {
     fun bind(moduleId: String, title: String, keyCode: Int) {
         ensureLoaded()
         bindings[moduleId] = Binding(moduleId, title, keyCode)
+        cachedActiveBindings = null
         save()
     }
 
     fun unbind(moduleId: String) {
         ensureLoaded()
         bindings.remove(moduleId)
+        cachedActiveBindings = null
         save()
     }
 
@@ -39,9 +42,11 @@ object ModuleHotkeys {
 
     fun activeBindings(): List<Binding> {
         ensureLoaded()
+        cachedActiveBindings?.let { return it }
         return bindings.values
             .filter { it.keyCode > 0 }
             .sortedWith(compareBy<Binding> { it.title.lowercase() }.thenBy { it.moduleId })
+            .also { cachedActiveBindings = it }
     }
 
     fun tick(client: MinecraftClient) {
@@ -73,7 +78,14 @@ object ModuleHotkeys {
             "hud.potions" -> toggleHud(HudModuleSettings.Module.POTIONS)
             "hud.hotkeys" -> toggleHud(HudModuleSettings.Module.HOTKEYS)
             "hud.target" -> TargetHudSettings.setEnabled(!TargetHudSettings.isEnabled())
-            else -> genericEnabled[moduleId] = !(genericEnabled[moduleId] ?: false)
+            "world.fullbright" -> WorldVisualSettings.setFullbrightEnabled(!WorldVisualSettings.fullbrightEnabled())
+            "world.custom_fog" -> WorldVisualSettings.setCustomFogEnabled(!WorldVisualSettings.customFogEnabled())
+            "other.friends" -> FriendsManager.setEnabled(!FriendsManager.isEnabled())
+            else -> {
+                val next = !HypnosiaClientSettings.boolean("module.$moduleId.enabled", genericEnabled[moduleId] ?: false)
+                genericEnabled[moduleId] = next
+                HypnosiaClientSettings.set("module.$moduleId.enabled", next.toString())
+            }
         }
     }
 
@@ -107,6 +119,14 @@ object ModuleHotkeys {
         }
     }
 
+    fun reload() {
+        loaded = false
+        bindings.clear()
+        pressed.clear()
+        cachedActiveBindings = null
+        ensureLoaded()
+    }
+
     private fun toggleHud(module: HudModuleSettings.Module) {
         HudModuleSettings.setEnabled(module, !HudModuleSettings.isEnabled(module))
     }
@@ -115,31 +135,29 @@ object ModuleHotkeys {
         if (loaded) return
         loaded = true
         runCatching {
-            val file = HypnosiaPaths.rootFile(FILE_NAME)
-            if (!Files.exists(file)) return@runCatching
-            val props = Properties()
-            Files.newInputStream(file).use(props::load)
-            props.stringPropertyNames()
+            HypnosiaClientSettings.keys(KEY_PREFIX)
                 .filter { it.endsWith(".key") }
                 .forEach { keyName ->
-                    val moduleId = keyName.removeSuffix(".key")
-                    val keyCode = props.getProperty(keyName).toIntOrNull() ?: return@forEach
-                    val title = props.getProperty("$moduleId.title", moduleId)
+                    val moduleId = keyName.removePrefix(KEY_PREFIX).removeSuffix(".key")
+                    val keyCode = HypnosiaClientSettings.string(keyName, "").toIntOrNull() ?: return@forEach
+                    val title = HypnosiaClientSettings.string("$KEY_PREFIX$moduleId.title", moduleId)
                     bindings[moduleId] = Binding(moduleId, title, keyCode)
                 }
+            cachedActiveBindings = null
         }
     }
 
     private fun save() {
         runCatching {
-            val props = Properties()
+            val values = linkedMapOf<String, String?>()
+            HypnosiaClientSettings.keys(KEY_PREFIX).forEach { key ->
+                values[key] = null
+            }
             bindings.values.forEach { binding ->
-                props["${binding.moduleId}.title"] = binding.title
-                props["${binding.moduleId}.key"] = binding.keyCode.toString()
+                values["$KEY_PREFIX${binding.moduleId}.title"] = binding.title
+                values["$KEY_PREFIX${binding.moduleId}.key"] = binding.keyCode.toString()
             }
-            Files.newOutputStream(HypnosiaPaths.rootFile(FILE_NAME)).use {
-                props.store(it, "Hypnosia module hotkeys")
-            }
+            HypnosiaClientSettings.setAll(values)
         }
     }
 }

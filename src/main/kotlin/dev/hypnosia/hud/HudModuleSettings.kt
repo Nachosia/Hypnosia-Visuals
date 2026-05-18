@@ -1,8 +1,6 @@
 package dev.hypnosia.hud
 
-import dev.hypnosia.license.HypnosiaPaths
-import java.nio.file.Files
-import java.util.Properties
+import dev.hypnosia.config.HypnosiaClientSettings
 
 object HudModuleSettings {
     enum class Module(val key: String) {
@@ -59,8 +57,8 @@ object HudModuleSettings {
         var playerInfoCordsY: Float = 0.18f,
     )
 
-    private const val FILE_NAME = "hud-modules.properties"
-    private val states = linkedMapOf(
+    private const val KEY_PREFIX = "hud."
+    private val defaultStates = linkedMapOf(
         Module.HOTBAR to State(enabled = true, version = Version.V1, axis = Axis.X, x = 0.5f, y = 0.94f, slotHighlight = false),
         Module.ARMOR to State(enabled = true, version = Version.V1, axis = Axis.X, x = 0.84f, y = 0.86f, slotHighlight = false),
         Module.PLAYER_INFO to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.18f, slotHighlight = false, playerInfoMode = PlayerInfoMode.ALL),
@@ -69,6 +67,9 @@ object HudModuleSettings {
         Module.POTIONS to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.51f, slotHighlight = false),
         Module.HOTKEYS to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.63f, slotHighlight = false),
     )
+    private val states = linkedMapOf<Module, State>().apply {
+        defaultStates.forEach { (module, state) -> put(module, state.copy()) }
+    }
     private var loaded = false
 
     fun state(module: Module): State {
@@ -113,7 +114,7 @@ object HudModuleSettings {
         save()
     }
 
-    fun setPlayerInfoPartPosition(part: PlayerInfoPart, x: Float, y: Float) {
+    fun setPlayerInfoPartPosition(part: PlayerInfoPart, x: Float, y: Float, persist: Boolean = true) {
         val state = state(Module.PLAYER_INFO)
         when (part) {
             PlayerInfoPart.BPS -> {
@@ -129,7 +130,7 @@ object HudModuleSettings {
                 state.playerInfoCordsY = y
             }
         }
-        save()
+        if (persist) save()
     }
 
     fun toggleAxis(module: Module) {
@@ -162,10 +163,15 @@ object HudModuleSettings {
         save()
     }
 
-    fun setPosition(module: Module, x: Float, y: Float) {
+    fun setPosition(module: Module, x: Float, y: Float, persist: Boolean = true) {
         val state = state(module)
         state.x = x
         state.y = y
+        if (persist) save()
+    }
+
+    fun saveNow() {
+        ensureLoaded()
         save()
     }
 
@@ -175,76 +181,74 @@ object HudModuleSettings {
         save()
     }
 
+    fun reload() {
+        loaded = false
+        states.clear()
+        defaultStates.forEach { (module, state) -> states[module] = state.copy() }
+        ensureLoaded()
+    }
+
     private fun ensureLoaded() {
         if (loaded) return
         loaded = true
         runCatching {
-            val file = HypnosiaPaths.rootFile(FILE_NAME)
-            if (!Files.exists(file)) {
-                save()
-                return@runCatching
-            }
-            val props = Properties()
-            Files.newInputStream(file).use(props::load)
             Module.entries.forEach { module ->
                 val state = states.getValue(module)
-                val prefix = module.key
-                state.enabled = props.getProperty("$prefix.enabled", state.enabled.toString())
+                val prefix = KEY_PREFIX + module.key
+                state.enabled = HypnosiaClientSettings.string("$prefix.enabled", state.enabled.toString())
                     .toBooleanStrictOrNull() ?: state.enabled
                 state.version = runCatching {
-                    Version.valueOf(props.getProperty("$prefix.version", state.version.name))
+                    Version.valueOf(HypnosiaClientSettings.string("$prefix.version", state.version.name))
                 }.getOrDefault(state.version)
                 state.axis = runCatching {
-                    Axis.valueOf(props.getProperty("$prefix.axis", state.axis.name))
+                    Axis.valueOf(HypnosiaClientSettings.string("$prefix.axis", state.axis.name))
                 }.getOrDefault(state.axis)
-                state.x = props.getProperty("$prefix.x", state.x.toString()).toFloatOrNull() ?: state.x
-                state.y = props.getProperty("$prefix.y", state.y.toString()).toFloatOrNull() ?: state.y
-                state.slotHighlight = props.getProperty("$prefix.slotHighlight", state.slotHighlight.toString())
+                state.x = HypnosiaClientSettings.float("$prefix.x", state.x)
+                state.y = HypnosiaClientSettings.float("$prefix.y", state.y)
+                state.slotHighlight = HypnosiaClientSettings.string("$prefix.slotHighlight", state.slotHighlight.toString())
                     .toBooleanStrictOrNull() ?: state.slotHighlight
                 state.playerInfoMode = runCatching {
-                    PlayerInfoMode.valueOf(props.getProperty("$prefix.playerInfoMode", state.playerInfoMode.name))
+                    PlayerInfoMode.valueOf(HypnosiaClientSettings.string("$prefix.playerInfoMode", state.playerInfoMode.name))
                 }.getOrDefault(state.playerInfoMode)
-                state.playerInfoBps = props.getProperty("$prefix.playerInfoBps", state.playerInfoBps.toString())
+                state.playerInfoBps = HypnosiaClientSettings.string("$prefix.playerInfoBps", state.playerInfoBps.toString())
                     .toBooleanStrictOrNull() ?: state.playerInfoBps
-                state.playerInfoTps = props.getProperty("$prefix.playerInfoTps", state.playerInfoTps.toString())
+                state.playerInfoTps = HypnosiaClientSettings.string("$prefix.playerInfoTps", state.playerInfoTps.toString())
                     .toBooleanStrictOrNull() ?: state.playerInfoTps
-                state.playerInfoCords = props.getProperty("$prefix.playerInfoCords", state.playerInfoCords.toString())
+                state.playerInfoCords = HypnosiaClientSettings.string("$prefix.playerInfoCords", state.playerInfoCords.toString())
                     .toBooleanStrictOrNull() ?: state.playerInfoCords
-                state.playerInfoBpsX = props.getProperty("$prefix.playerInfoBpsX", state.playerInfoBpsX.toString()).toFloatOrNull() ?: state.playerInfoBpsX
-                state.playerInfoBpsY = props.getProperty("$prefix.playerInfoBpsY", state.playerInfoBpsY.toString()).toFloatOrNull() ?: state.playerInfoBpsY
-                state.playerInfoTpsX = props.getProperty("$prefix.playerInfoTpsX", state.playerInfoTpsX.toString()).toFloatOrNull() ?: state.playerInfoTpsX
-                state.playerInfoTpsY = props.getProperty("$prefix.playerInfoTpsY", state.playerInfoTpsY.toString()).toFloatOrNull() ?: state.playerInfoTpsY
-                state.playerInfoCordsX = props.getProperty("$prefix.playerInfoCordsX", state.playerInfoCordsX.toString()).toFloatOrNull() ?: state.playerInfoCordsX
-                state.playerInfoCordsY = props.getProperty("$prefix.playerInfoCordsY", state.playerInfoCordsY.toString()).toFloatOrNull() ?: state.playerInfoCordsY
+                state.playerInfoBpsX = HypnosiaClientSettings.float("$prefix.playerInfoBpsX", state.playerInfoBpsX)
+                state.playerInfoBpsY = HypnosiaClientSettings.float("$prefix.playerInfoBpsY", state.playerInfoBpsY)
+                state.playerInfoTpsX = HypnosiaClientSettings.float("$prefix.playerInfoTpsX", state.playerInfoTpsX)
+                state.playerInfoTpsY = HypnosiaClientSettings.float("$prefix.playerInfoTpsY", state.playerInfoTpsY)
+                state.playerInfoCordsX = HypnosiaClientSettings.float("$prefix.playerInfoCordsX", state.playerInfoCordsX)
+                state.playerInfoCordsY = HypnosiaClientSettings.float("$prefix.playerInfoCordsY", state.playerInfoCordsY)
             }
         }
     }
 
     private fun save() {
         runCatching {
-            val props = Properties()
+            val values = linkedMapOf<String, String>()
             states.forEach { (module, state) ->
-                val prefix = module.key
-                props["$prefix.enabled"] = state.enabled.toString()
-                props["$prefix.version"] = state.version.name
-                props["$prefix.axis"] = state.axis.name
-                props["$prefix.x"] = state.x.toString()
-                props["$prefix.y"] = state.y.toString()
-                props["$prefix.slotHighlight"] = state.slotHighlight.toString()
-                props["$prefix.playerInfoMode"] = state.playerInfoMode.name
-                props["$prefix.playerInfoBps"] = state.playerInfoBps.toString()
-                props["$prefix.playerInfoTps"] = state.playerInfoTps.toString()
-                props["$prefix.playerInfoCords"] = state.playerInfoCords.toString()
-                props["$prefix.playerInfoBpsX"] = state.playerInfoBpsX.toString()
-                props["$prefix.playerInfoBpsY"] = state.playerInfoBpsY.toString()
-                props["$prefix.playerInfoTpsX"] = state.playerInfoTpsX.toString()
-                props["$prefix.playerInfoTpsY"] = state.playerInfoTpsY.toString()
-                props["$prefix.playerInfoCordsX"] = state.playerInfoCordsX.toString()
-                props["$prefix.playerInfoCordsY"] = state.playerInfoCordsY.toString()
+                val prefix = KEY_PREFIX + module.key
+                values["$prefix.enabled"] = state.enabled.toString()
+                values["$prefix.version"] = state.version.name
+                values["$prefix.axis"] = state.axis.name
+                values["$prefix.x"] = state.x.toString()
+                values["$prefix.y"] = state.y.toString()
+                values["$prefix.slotHighlight"] = state.slotHighlight.toString()
+                values["$prefix.playerInfoMode"] = state.playerInfoMode.name
+                values["$prefix.playerInfoBps"] = state.playerInfoBps.toString()
+                values["$prefix.playerInfoTps"] = state.playerInfoTps.toString()
+                values["$prefix.playerInfoCords"] = state.playerInfoCords.toString()
+                values["$prefix.playerInfoBpsX"] = state.playerInfoBpsX.toString()
+                values["$prefix.playerInfoBpsY"] = state.playerInfoBpsY.toString()
+                values["$prefix.playerInfoTpsX"] = state.playerInfoTpsX.toString()
+                values["$prefix.playerInfoTpsY"] = state.playerInfoTpsY.toString()
+                values["$prefix.playerInfoCordsX"] = state.playerInfoCordsX.toString()
+                values["$prefix.playerInfoCordsY"] = state.playerInfoCordsY.toString()
             }
-            Files.newOutputStream(HypnosiaPaths.rootFile(FILE_NAME)).use {
-                props.store(it, "Hypnosia HUD module settings")
-            }
+            HypnosiaClientSettings.setAll(values)
         }
     }
 }

@@ -86,7 +86,7 @@
 - Inputs/Props: x, y, width, height, radius, ARGB fill color, ARGB stroke color, stroke thickness.
 - States: static; animate inputs through `AnimatedFloat`, `SpringFloat`, or `TimedTransition`.
 - Dependencies: none.
-- Reuse notes: Prefer `HypnosiaRenderUtils.drawFigmaBox` for all rounded Figma rectangles instead of assembling rectangles/corners from multiple `DrawContext.fill` calls.
+- Reuse notes: Prefer `HypnosiaRenderUtils.drawFigmaBox` for raw gameplay/HUD/status rectangles and `HypnosiaRenderUtils.drawThemedBox(..., role = ThemeRole...)` for menu surfaces. Do not reintroduce global color-based theme interception; it breaks HP, armor, food, oxygen, target bars, and other gameplay indicators.
 
 ## hypnosia.sdf-gradient-box - SDF Linear Gradient Box
 - Purpose: Shader-backed rounded rectangle primitive for Figma panels and indicators with two-color linear gradient fills and optional inner stroke.
@@ -199,3 +199,27 @@
 - States: enabled/disabled module row, V1/V2/V3/V4 where applicable, Player Info mode `BPS/TPS/CORDS/ALL`, drag in chat, clipped marquee for long cooldown/effect names.
 - Dependencies: none.
 - Reuse notes: Use `HudRenderSupport` for fixed-framebuffer coordinates, shared colors, Inter Medium text, and marquee; use `HudDragController` for any new simple draggable HUD overlay.
+
+## hypnosia.icon-settings - Global Icon Settings
+- Purpose: Client `Icons` module that globally hides the black-hole icon and recolors GUI/HUD icon textures through the shared render path.
+- Files: `src/main/kotlin/dev/hypnosia/config/IconSettings.kt`, `src/main/kotlin/dev/hypnosia/ui/render/HypnosiaRenderUtils.kt`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: `module.client.icons.enabled`, `icons.blackHole.visible`, `icons.color`.
+- States: enabled/disabled module, black-hole show/hide, collapsed/expanded color palette.
+- Dependencies: none.
+- Reuse notes: Route new icon textures through `HypnosiaRenderUtils.drawIconTexture` or `drawRoundedTexture`; the global tint/black-hole filtering is applied there automatically.
+
+## hypnosia.theme-settings - Global UI Theme Settings
+- Purpose: Client `Theme` module that recolors only explicit menu/UI surfaces through semantic `ThemeRole`s, with Dark, White, Transparent, Custom gradient, and Liquid Glass modes.
+- Files: `src/main/kotlin/dev/hypnosia/config/ThemeSettings.kt`, `src/main/kotlin/dev/hypnosia/ui/render/HypnosiaRenderUtils.kt`, `src/main/kotlin/dev/hypnosia/ui/render/GlassSurfaceTokens.kt`, `src/main/kotlin/dev/hypnosia/ui/render/LiquidGlassSurface.kt`, `src/main/kotlin/dev/hypnosia/ui/render/FigmaTextRenderer.kt`, `src/main/kotlin/dev/hypnosia/render/HypnosiaShaders.kt`, `src/main/resources/assets/hypnosia/shaders/core/sdf_liquid_glass_box.*`, `src/main/kotlin/dev/hypnosia/ui/layout/HypnosiaMainLayout.kt`
+- Inputs/Props: `module.client.theme.enabled`, `theme.mode`, `theme.font`, `theme.liquidGlass`, `theme.gradient`, `theme.baseColor`, `theme.gradientStart`, `theme.gradientEnd`.
+- States: dark baseline, white readable text/icon remap inside themed UI context, transparent tinted panels without text alpha changes, custom gradient panels, Liquid Glass layered frosted surfaces, optional custom font file at `hypnosia/fonts/custom.ttf`.
+- Dependencies: none.
+- Reuse notes: New menu surfaces must use `HypnosiaRenderUtils.drawThemedBox` with an explicit `ThemeRole` (`MAIN_PANEL`, `CARD`, `HEADER`, `BUTTON`, `INPUT`, `DRAWER`, `ICON_BUTTON`). `drawThemedBox` delegates Liquid Glass surfaces to `LiquidGlassSurface`, which draws the full layered glass stack. HUD/gameplay overlays must keep using raw `drawFigmaBox`; transparent/glass affects surfaces only and must never reduce text/icon alpha or recolor HP/armor/food/oxygen/status bars.
+
+## hypnosia.other-runtime-modules - Friends TAB Marker and Discord RPC Foundation
+- Purpose: Runtime behavior for `Friends` and `Discord RPC` modules: TAB friend marking from `friends.txt`, and Discord Rich Presence lines from account state.
+- Files: `src/main/kotlin/dev/hypnosia/other/FriendsManager.kt`, `src/main/java/dev/hypnosia/mixin/PlayerListHudMixin.java`, `src/main/kotlin/dev/hypnosia/other/DiscordRpcManager.kt`, `src/main/resources/hypnosia.mixins.json`, `src/main/resources/fabric.mod.json`
+- Inputs/Props: `module.other.friends.enabled`, `friends.txt`, `module.other.discord_rpc.enabled`, `discord_rpc.applicationId`, `AccountManager.state`.
+- States: Friends on/off, friend name decorated in TAB, Discord RPC disconnected/no app id/connected, no-account line `no acc`, account lines `ID: ...` and `Role: ...`.
+- Dependencies: none.
+- Reuse notes: Keep Discord app id out of source control; set it through client settings or a future drawer field. Friend display should continue routing through `FriendsManager.decorateTabName` so the TAB mixin stays minimal.

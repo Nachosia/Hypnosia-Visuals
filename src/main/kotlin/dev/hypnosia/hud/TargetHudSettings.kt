@@ -1,8 +1,6 @@
 package dev.hypnosia.hud
 
-import dev.hypnosia.license.HypnosiaPaths
-import java.nio.file.Files
-import java.util.Properties
+import dev.hypnosia.config.HypnosiaClientSettings
 
 object TargetHudSettings {
     enum class Version {
@@ -28,7 +26,8 @@ object TargetHudSettings {
         var modelOffsetY: Float = 0.0f,
     )
 
-    private const val FILE_NAME = "target-hud.properties"
+    private const val KEY_PREFIX = "target."
+    private val defaultState = State()
     private val state = State()
     private var loaded = false
 
@@ -61,11 +60,11 @@ object TargetHudSettings {
         save()
     }
 
-    fun setPosition(x: Float, y: Float) {
+    fun setPosition(x: Float, y: Float, persist: Boolean = true) {
         val current = state()
         current.x = x
         current.y = y
-        save()
+        if (persist) save()
     }
 
     fun toggleEquipmentStrip() {
@@ -78,13 +77,18 @@ object TargetHudSettings {
         save()
     }
 
-    fun setModelYaw(value: Float) {
+    fun setModelYaw(value: Float, persist: Boolean = true) {
         state().modelYaw = value.coerceIn(-180.0f, 180.0f)
-        save()
+        if (persist) save()
     }
 
-    fun setModelPitch(value: Float) {
+    fun setModelPitch(value: Float, persist: Boolean = true) {
         state().modelPitch = value.coerceIn(-90.0f, 90.0f)
+        if (persist) save()
+    }
+
+    fun saveNow() {
+        ensureLoaded()
         save()
     }
 
@@ -119,53 +123,63 @@ object TargetHudSettings {
 
     fun sliderToOffset(value: Float): Float = value.coerceIn(0.0f, 1.0f) * 100.0f - 50.0f
 
+    fun reload() {
+        loaded = false
+        copyState(defaultState, state)
+        ensureLoaded()
+    }
+
     private fun ensureLoaded() {
         if (loaded) return
         loaded = true
         runCatching {
-            val file = HypnosiaPaths.rootFile(FILE_NAME)
-            if (!Files.exists(file)) {
-                save()
-                return@runCatching
-            }
-
-            val props = Properties()
-            Files.newInputStream(file).use(props::load)
-            state.enabled = props.getProperty("enabled", state.enabled.toString())
-                .toBooleanStrictOrNull() ?: state.enabled
+            state.enabled = HypnosiaClientSettings.boolean(KEY_PREFIX + "enabled", state.enabled)
             state.version = runCatching {
-                Version.valueOf(props.getProperty("version", state.version.name))
+                Version.valueOf(HypnosiaClientSettings.string(KEY_PREFIX + "version", state.version.name))
             }.getOrDefault(state.version)
-            state.x = props.getProperty("x", state.x.toString()).toFloatOrNull() ?: state.x
-            state.y = props.getProperty("y", state.y.toString()).toFloatOrNull() ?: state.y
-            state.showEquipmentStrip = props.getProperty("showEquipmentStrip", state.showEquipmentStrip.toString())
-                .toBooleanStrictOrNull() ?: state.showEquipmentStrip
+            state.x = HypnosiaClientSettings.float(KEY_PREFIX + "x", state.x)
+            state.y = HypnosiaClientSettings.float(KEY_PREFIX + "y", state.y)
+            state.showEquipmentStrip = HypnosiaClientSettings.boolean(KEY_PREFIX + "showEquipmentStrip", state.showEquipmentStrip)
             state.modelSpin = false
-            state.modelYaw = props.getProperty("modelYaw", state.modelYaw.toString()).toFloatOrNull() ?: state.modelYaw
-            state.modelPitch = props.getProperty("modelPitch", state.modelPitch.toString()).toFloatOrNull() ?: state.modelPitch
-            state.modelScale = props.getProperty("modelScale", state.modelScale.toString()).toFloatOrNull() ?: state.modelScale
-            state.modelOffsetX = props.getProperty("modelOffsetX", state.modelOffsetX.toString()).toFloatOrNull() ?: state.modelOffsetX
-            state.modelOffsetY = props.getProperty("modelOffsetY", state.modelOffsetY.toString()).toFloatOrNull() ?: state.modelOffsetY
+            state.modelYaw = HypnosiaClientSettings.float(KEY_PREFIX + "modelYaw", state.modelYaw)
+            state.modelPitch = HypnosiaClientSettings.float(KEY_PREFIX + "modelPitch", state.modelPitch)
+            state.modelScale = HypnosiaClientSettings.float(KEY_PREFIX + "modelScale", state.modelScale)
+            state.modelOffsetX = HypnosiaClientSettings.float(KEY_PREFIX + "modelOffsetX", state.modelOffsetX)
+            state.modelOffsetY = HypnosiaClientSettings.float(KEY_PREFIX + "modelOffsetY", state.modelOffsetY)
         }
     }
 
     private fun save() {
         runCatching {
-            val props = Properties()
-            props["enabled"] = state.enabled.toString()
-            props["version"] = state.version.name
-            props["x"] = state.x.toString()
-            props["y"] = state.y.toString()
-            props["showEquipmentStrip"] = state.showEquipmentStrip.toString()
-            props["modelSpin"] = state.modelSpin.toString()
-            props["modelYaw"] = state.modelYaw.toString()
-            props["modelPitch"] = state.modelPitch.toString()
-            props["modelScale"] = state.modelScale.toString()
-            props["modelOffsetX"] = state.modelOffsetX.toString()
-            props["modelOffsetY"] = state.modelOffsetY.toString()
-            Files.newOutputStream(HypnosiaPaths.rootFile(FILE_NAME)).use {
-                props.store(it, "Hypnosia Target HUD settings")
-            }
+            HypnosiaClientSettings.setAll(
+                mapOf(
+                    KEY_PREFIX + "enabled" to state.enabled.toString(),
+                    KEY_PREFIX + "version" to state.version.name,
+                    KEY_PREFIX + "x" to state.x.toString(),
+                    KEY_PREFIX + "y" to state.y.toString(),
+                    KEY_PREFIX + "showEquipmentStrip" to state.showEquipmentStrip.toString(),
+                    KEY_PREFIX + "modelSpin" to state.modelSpin.toString(),
+                    KEY_PREFIX + "modelYaw" to state.modelYaw.toString(),
+                    KEY_PREFIX + "modelPitch" to state.modelPitch.toString(),
+                    KEY_PREFIX + "modelScale" to state.modelScale.toString(),
+                    KEY_PREFIX + "modelOffsetX" to state.modelOffsetX.toString(),
+                    KEY_PREFIX + "modelOffsetY" to state.modelOffsetY.toString(),
+                ),
+            )
         }
+    }
+
+    private fun copyState(from: State, to: State) {
+        to.enabled = from.enabled
+        to.version = from.version
+        to.x = from.x
+        to.y = from.y
+        to.showEquipmentStrip = from.showEquipmentStrip
+        to.modelSpin = from.modelSpin
+        to.modelYaw = from.modelYaw
+        to.modelPitch = from.modelPitch
+        to.modelScale = from.modelScale
+        to.modelOffsetX = from.modelOffsetX
+        to.modelOffsetY = from.modelOffsetY
     }
 }

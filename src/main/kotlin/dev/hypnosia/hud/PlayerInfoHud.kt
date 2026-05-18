@@ -280,6 +280,7 @@ object PlayerInfoHud {
             val isChatOpen = client.currentScreen is ChatScreen
             val isMouseDown = GLFW.glfwGetMouseButton(window.handle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS
             if (!isChatOpen || client.player == null || !HudModuleSettings.isEnabled(HudModuleSettings.Module.PLAYER_INFO)) {
+                if (active != null) HudModuleSettings.saveNow()
                 active = null
                 wasMouseDown = isMouseDown
                 return
@@ -312,9 +313,11 @@ object PlayerInfoHud {
                         PlayerInfoHud.settingPart(drag.part),
                         snappedX / maxX,
                         snappedY / maxY,
+                        persist = false,
                     )
                 }
             } else {
+                if (active != null) HudModuleSettings.saveNow()
                 active = null
             }
 

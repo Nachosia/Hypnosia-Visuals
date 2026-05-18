@@ -50,6 +50,13 @@ object HypnosiaShaders {
         uniform = "HypnosiaGradientBox",
     )
 
+    val SDF_LIQUID_GLASS_BOX: RenderPipeline = registerUiPipeline(
+        location = "pipeline/sdf_liquid_glass_box",
+        shader = "core/sdf_liquid_glass_box",
+        uniform = "HypnosiaGlassBox",
+        sampler = "Sampler0",
+    )
+
     val HSV_COLOR_CANVAS: RenderPipeline = registerUiPipeline(
         location = "pipeline/hsv_color_canvas",
         shader = "core/hsv_color_canvas",
@@ -89,6 +96,7 @@ object HypnosiaShaders {
             .withVertexShader(Identifier.of(HypnosiaClient.MOD_ID, "core/hq_text"))
             .withFragmentShader(Identifier.of(HypnosiaClient.MOD_ID, "core/hq_text"))
             .withSampler("Sampler0")
+            .withUniform("HypnosiaTextFade", UniformType.UNIFORM_BUFFER)
             .withVertexFormat(VertexFormats.POSITION_TEXTURE_COLOR, VertexFormat.DrawMode.QUADS)
             .withBlend(BlendFunction.TRANSLUCENT)
             .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
@@ -107,9 +115,9 @@ object HypnosiaShaders {
         location: String,
         shader: String,
         uniform: String,
+        sampler: String? = null,
     ): RenderPipeline {
-        return RenderPipelines.register(
-            RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
+        val builder = RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
                 .withLocation(Identifier.of(HypnosiaClient.MOD_ID, location))
                 .withVertexShader(Identifier.of(HypnosiaClient.MOD_ID, shader))
                 .withFragmentShader(Identifier.of(HypnosiaClient.MOD_ID, shader))
@@ -119,7 +127,9 @@ object HypnosiaShaders {
                 .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
                 .withDepthWrite(false)
                 .withCull(false)
-                .build(),
-        )
+        if (sampler != null) {
+            builder.withSampler(sampler)
+        }
+        return RenderPipelines.register(builder.build())
     }
 }

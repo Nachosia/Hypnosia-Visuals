@@ -1,6 +1,7 @@
 package dev.hypnosia.ui.render
 
 import dev.hypnosia.HypnosiaClient
+import dev.hypnosia.config.ThemeSettings
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.text.Style
@@ -13,6 +14,7 @@ object FigmaTextRenderer {
     enum class Font(val id: Identifier, val baseSize: Float) {
         Main(Identifier.of(HypnosiaClient.MOD_ID, "main"), 12.0f),
         Title(Identifier.of(HypnosiaClient.MOD_ID, "title"), 12.0f),
+        Custom(Identifier.of(HypnosiaClient.MOD_ID, "main"), 12.0f),
     }
 
     enum class HorizontalAlign {
@@ -115,14 +117,17 @@ object FigmaTextRenderer {
         y: Float,
         color: Int,
         style: FigmaTextStyle,
+        fade: HighQualityTextRenderer.TextFade? = null,
     ) {
+        val themedStyle = themedStyle(style)
         drawRaw(
             context = context,
             text = text,
             x = x,
-            y = y + style.baselineOffset,
-            color = color,
-            style = style,
+            y = y + themedStyle.baselineOffset,
+            color = ThemeSettings.resolveTextColor(color),
+            style = themedStyle,
+            fade = fade,
         )
     }
 
@@ -137,6 +142,7 @@ object FigmaTextRenderer {
         style: FigmaTextStyle,
         horizontalAlign: HorizontalAlign = HorizontalAlign.Left,
         verticalAlign: VerticalAlign = VerticalAlign.Top,
+        fade: HighQualityTextRenderer.TextFade? = null,
     ) {
         val textWidth = width(text, style)
         val drawXRaw = when (horizontalAlign) {
@@ -144,33 +150,41 @@ object FigmaTextRenderer {
             HorizontalAlign.Center -> x + (width - textWidth) * 0.5f
             HorizontalAlign.Right -> x + width - textWidth
         }
+
+        // AWT atlas glyphs include internal leading above the visible letters.
+        // Center visually by the font size, not by Figma line-height.
+        val opticalHeight = style.size
+        val awtCorrection = opticalHeight * 0.12f
+
         val drawYRaw = when (verticalAlign) {
             VerticalAlign.Top -> y
-            VerticalAlign.Center -> y + (height - style.lineHeight) * 0.5f
-            VerticalAlign.Bottom -> y + height - style.lineHeight
+            VerticalAlign.Center -> y + (height - opticalHeight) * 0.5f - awtCorrection
+            VerticalAlign.Bottom -> y + height - opticalHeight - awtCorrection
         }
-        draw(context, text, drawXRaw, drawYRaw, color, style)
+        draw(context, text, drawXRaw, drawYRaw, color, style, fade)
     }
 
     fun width(text: String, size: Float, font: Font = Font.Main): Float {
+        val effectiveFont = ThemeSettings.resolveFont(font)
         HighQualityTextRenderer.width(
             text,
             FigmaTextStyle(
-                font = font,
+                font = effectiveFont,
                 size = size,
                 lineHeight = size * 1.2f,
             ),
         )?.let { return it }
 
-        val scale = size / font.baseSize
-        return MinecraftClient.getInstance().textRenderer.getWidth(styled(text, font)) * scale
+        val scale = size / effectiveFont.baseSize
+        return MinecraftClient.getInstance().textRenderer.getWidth(styled(text, effectiveFont)) * scale
     }
 
     fun width(text: String, style: FigmaTextStyle): Float {
-        HighQualityTextRenderer.width(text, style)?.let { return it }
-        val baseWidth = width(text, style.size, style.font)
+        val themedStyle = themedStyle(style)
+        HighQualityTextRenderer.width(text, themedStyle)?.let { return it }
+        val baseWidth = width(text, themedStyle.size, themedStyle.font)
         val gaps = (text.length - 1).coerceAtLeast(0)
-        return baseWidth + gaps * style.letterSpacing
+        return baseWidth + gaps * themedStyle.letterSpacing
     }
 
     private fun drawRaw(
@@ -180,6 +194,7 @@ object FigmaTextRenderer {
         y: Float,
         color: Int,
         style: FigmaTextStyle,
+        fade: HighQualityTextRenderer.TextFade? = null,
     ) {
         if (text.isEmpty()) {
             return
@@ -188,7 +203,7 @@ object FigmaTextRenderer {
         val drawX = snapHalf(x)
         val drawY = snapHalf(y)
 
-        if (HighQualityTextRenderer.draw(context, text, drawX, drawY, color, style)) {
+        if (HighQualityTextRenderer.draw(context, text, drawX, drawY, color, style, fade)) {
             return
         }
 
@@ -233,6 +248,12 @@ object FigmaTextRenderer {
     }
 
     private fun styled(text: String, font: Font): Text {
-        return Text.literal(text).setStyle(Style.EMPTY.withFont(StyleSpriteSource.Font(font.id)))
+        val fallbackFont = if (font == Font.Custom) Font.Main else font
+        return Text.literal(text).setStyle(Style.EMPTY.withFont(StyleSpriteSource.Font(fallbackFont.id)))
+    }
+
+    private fun themedStyle(style: FigmaTextStyle): FigmaTextStyle {
+        val font = ThemeSettings.resolveFont(style.font)
+        return if (font == style.font) style else style.copy(font = font)
     }
 }

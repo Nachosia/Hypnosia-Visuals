@@ -13,6 +13,7 @@ class HudDragController(private val module: HudModuleSettings.Module) {
         val isChatOpen = client.currentScreen is ChatScreen
         val isMouseDown = GLFW.glfwGetMouseButton(window.handle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS
         if (!isChatOpen || client.player == null || !HudModuleSettings.isEnabled(module)) {
+            if (active != null) HudModuleSettings.saveNow()
             active = null
             wasMouseDown = isMouseDown
             return
@@ -36,9 +37,10 @@ class HudDragController(private val module: HudModuleSettings.Module) {
                 val maxY = (screenH - drag.height).coerceAtLeast(1.0f)
                 val snappedX = HudRenderSupport.snapPixel(mouseX - drag.offsetX).coerceIn(0.0f, maxX)
                 val snappedY = HudRenderSupport.snapPixel(mouseY - drag.offsetY).coerceIn(0.0f, maxY)
-                HudModuleSettings.setPosition(module, snappedX / maxX, snappedY / maxY)
+                HudModuleSettings.setPosition(module, snappedX / maxX, snappedY / maxY, persist = false)
             }
         } else {
+            if (active != null) HudModuleSettings.saveNow()
             active = null
         }
 

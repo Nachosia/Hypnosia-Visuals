@@ -15,5 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "hypnosia"
-include("license-server")
-include("license-admin")
+if (file("license-server").isDirectory) include("license-server")
+if (file("license-admin").isDirectory) include("license-admin")

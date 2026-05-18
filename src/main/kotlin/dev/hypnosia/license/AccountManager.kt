@@ -1,11 +1,16 @@
 package dev.hypnosia.license
 
 import dev.hypnosia.HypnosiaClient
+import dev.hypnosia.config.HypnosiaConfigProfiles
 import java.net.URI
+import java.net.http.HttpTimeoutException
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.time.Duration
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
@@ -21,8 +26,12 @@ import kotlin.io.path.writeBytes
 object AccountManager {
     // Public license/account API. Admin panel is still localhost-only on the VPS.
     private const val DEFAULT_API_URL = "https://api.nachosia.site"
+    private const val MAX_CLOUD_CONFIG_BYTES = 64 * 1024
+    private val DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(8)
+    private val CLOUD_REQUEST_TIMEOUT = Duration.ofSeconds(20)
     private val licenseRegex = Regex("^[A-Za-z0-9]{32}$")
     private val cloudConfigKeyRegex = Regex("^[A-Za-z0-9]{8}$")
+    private val localConfigNameRegex = Regex("""^[\p{L}\p{N} _.-]{1,48}$""")
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(4))
         .build()
@@ -74,6 +83,20 @@ object AccountManager {
 
     fun createAsync(): CompletableFuture<AccountState> {
         return postAccount("/api/account/create", extraFields = emptyMap())
+    }
+
+    fun checkServiceAvailableAsync(): CompletableFuture<Boolean> {
+        val apiUri = secureApiUri(DEFAULT_API_URL)
+            ?: return CompletableFuture.completedFuture(false)
+        val request = HttpRequest.newBuilder(apiUri.resolve("/health"))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .GET()
+            .build()
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .thenApply { response ->
+                response.statusCode() in 200..299 && boolValue(response.body(), "ok") == true
+            }
+            .exceptionally { false }
     }
 
     fun markOnlineAsync(displayName: String?): CompletableFuture<Boolean> {
@@ -172,11 +195,20 @@ object AccountManager {
 
     fun saveCloudConfigAsync(name: String): CompletableFuture<CloudSaveResult> {
         val source = resolveLocalConfigFile(name)
+            ?: return CompletableFuture.completedFuture(CloudSaveResult.Error("CONFIG_NAME_FORMAT"))
         if (!source.exists()) {
             return CompletableFuture.completedFuture(CloudSaveResult.Error("LOCAL_CONFIG_NOT_FOUND: ${source.name}"))
         }
 
-        val payload = Base64.getEncoder().encodeToString(source.readBytes())
+        val bytes = HypnosiaConfigProfiles.exportCanonicalBytes(source.name.removeSuffix(".json"))
+            ?: runCatching { source.readBytes() }.getOrNull()?.let(HypnosiaConfigProfiles::canonicalizeBytes)
+            ?: return CompletableFuture.completedFuture(CloudSaveResult.Error("LOCAL_CONFIG_READ_FAILED"))
+        val validationError = validateConfigBytes(bytes)
+        if (validationError != null) {
+            return CompletableFuture.completedFuture(CloudSaveResult.Error(validationError))
+        }
+
+        val payload = Base64.getEncoder().encodeToString(bytes)
         val session = state as? AccountState.Valid
         val base = if (session == null) createAsync() else CompletableFuture.completedFuture(session)
         return base.thenCompose { created ->
@@ -191,7 +223,7 @@ object AccountManager {
             }
             LicenseConfig.loadOrCreate().licenseKey?.let { fields["license"] = it }
 
-            postJson("/api/cloud-config/save", fields)
+            postJsonWithRetry("/api/cloud-config/save", fields, CLOUD_REQUEST_TIMEOUT, retries = 1)
                 .thenApply { response ->
                     if (response.statusCode() !in 200..299) {
                         return@thenApply CloudSaveResult.Error("HTTP_${response.statusCode()}")
@@ -213,7 +245,7 @@ object AccountManager {
                         limit = intValue(body, "limit") ?: 3,
                     )
                 }
-        }.exceptionally { CloudSaveResult.Error(it.message ?: "NETWORK_ERROR") }
+        }.exceptionally { CloudSaveResult.Error(networkErrorReason(it)) }
     }
 
     fun loadCloudConfigAsync(configKey: String, outputName: String?): CompletableFuture<CloudLoadResult> {
@@ -228,7 +260,7 @@ object AccountManager {
             fields["hwidHash"] = HardwareFingerprint.currentHash64()
         }
 
-        return postJson("/api/cloud-config/load", fields)
+        return postJson("/api/cloud-config/load", fields, CLOUD_REQUEST_TIMEOUT)
             .thenApply { response ->
                 if (response.statusCode() !in 200..299) {
                     return@thenApply CloudLoadResult.Error("HTTP_${response.statusCode()}")
@@ -240,13 +272,20 @@ object AccountManager {
                 val payload = stringValue(body, "payloadBase64") ?: return@thenApply CloudLoadResult.Error("PAYLOAD_MISSING")
                 val bytes = runCatching { Base64.getDecoder().decode(payload) }.getOrNull()
                     ?: return@thenApply CloudLoadResult.Error("PAYLOAD_FORMAT")
+                val canonicalBytes = HypnosiaConfigProfiles.canonicalizeBytes(bytes)
+                    ?: return@thenApply CloudLoadResult.Error("PAYLOAD_SCHEMA_INVALID")
+                val validationError = validateConfigBytes(canonicalBytes)
+                if (validationError != null) {
+                    return@thenApply CloudLoadResult.Error(validationError)
+                }
                 val finalName = outputName?.takeIf { it.isNotBlank() } ?: stringValue(body, "name") ?: normalized
-                val target = resolveLocalConfigFile(finalName)
+                val target = resolveLocalConfigFile(finalName) ?: resolveLocalConfigFile(normalized)
+                    ?: return@thenApply CloudLoadResult.Error("CONFIG_NAME_FORMAT")
                 target.parent.createDirectories()
-                target.writeBytes(bytes)
+                target.writeBytes(canonicalBytes)
                 CloudLoadResult.Loaded(target.name)
             }
-            .exceptionally { CloudLoadResult.Error(it.message ?: "NETWORK_ERROR") }
+            .exceptionally { CloudLoadResult.Error(networkErrorReason(it)) }
     }
 
     fun listCloudConfigsAsync(): CompletableFuture<CloudListResult> {
@@ -258,6 +297,7 @@ object AccountManager {
                 "accountKey" to current.accountKey,
                 "hwidHash" to HardwareFingerprint.currentHash64(),
             ),
+            timeout = CLOUD_REQUEST_TIMEOUT,
         ).thenApply { response ->
             if (response.statusCode() !in 200..299) {
                 return@thenApply CloudListResult.Error("HTTP_${response.statusCode()}")
@@ -271,7 +311,7 @@ object AccountManager {
                 limit = intValue(body, "limit") ?: 3,
                 configs = configSummaries(body),
             )
-        }.exceptionally { CloudListResult.Error(it.message ?: "NETWORK_ERROR") }
+        }.exceptionally { CloudListResult.Error(networkErrorReason(it)) }
     }
 
     fun deleteCloudConfigAsync(nameOrKey: String): CompletableFuture<CloudDeleteResult> {
@@ -301,6 +341,7 @@ object AccountManager {
                     "hwidHash" to HardwareFingerprint.currentHash64(),
                     "configKey" to key,
                 ),
+                timeout = CLOUD_REQUEST_TIMEOUT,
             ).thenApply { response ->
                 if (response.statusCode() !in 200..299) {
                     return@thenApply CloudDeleteResult.Error("HTTP_${response.statusCode()}")
@@ -312,7 +353,7 @@ object AccountManager {
                     CloudDeleteResult.Error(stringValue(body, "status") ?: "INVALID_RESPONSE")
                 }
             }
-        }.exceptionally { CloudDeleteResult.Error(it.message ?: "NETWORK_ERROR") }
+        }.exceptionally { CloudDeleteResult.Error(networkErrorReason(it)) }
     }
 
     private fun pollNotificationsAsync(): CompletableFuture<List<String>> {
@@ -395,15 +436,51 @@ object AccountManager {
         return CompletableFuture.completedFuture(state)
     }
 
-    private fun postJson(path: String, fields: Map<String, String>): CompletableFuture<HttpResponse<String>> {
+    private fun postJson(
+        path: String,
+        fields: Map<String, String>,
+        timeout: Duration = DEFAULT_REQUEST_TIMEOUT,
+    ): CompletableFuture<HttpResponse<String>> {
         val apiUri = secureApiUri(DEFAULT_API_URL)
             ?: return CompletableFuture.failedFuture(IllegalStateException("INSECURE_ENDPOINT"))
         val request = HttpRequest.newBuilder(apiUri.resolve(path))
-            .timeout(Duration.ofSeconds(8))
+            .timeout(timeout)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(jsonObject(fields)))
             .build()
         return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+    }
+
+    private fun postJsonWithRetry(
+        path: String,
+        fields: Map<String, String>,
+        timeout: Duration,
+        retries: Int,
+    ): CompletableFuture<HttpResponse<String>> {
+        return postJson(path, fields, timeout).handle { response, error ->
+            if (error == null) {
+                CompletableFuture.completedFuture(response)
+            } else if (retries > 0 && rootCause(error) is HttpTimeoutException) {
+                postJsonWithRetry(path, fields, timeout, retries - 1)
+            } else {
+                CompletableFuture.failedFuture<HttpResponse<String>>(error)
+            }
+        }.thenCompose { it }
+    }
+
+    private fun networkErrorReason(error: Throwable): String {
+        return when (rootCause(error)) {
+            is HttpTimeoutException -> "NETWORK_TIMEOUT"
+            else -> error.message ?: "NETWORK_ERROR"
+        }
+    }
+
+    private fun rootCause(error: Throwable): Throwable {
+        var current = error
+        while (current.cause != null && current.cause !== current) {
+            current = current.cause!!
+        }
+        return current
     }
 
     private fun secureApiUri(apiUrl: String): URI? {
@@ -415,13 +492,164 @@ object AccountManager {
         return uri
     }
 
-    private fun resolveLocalConfigFile(name: String): java.nio.file.Path {
-        val safeName = name.trim()
-            .replace('\\', '/')
-            .substringAfterLast('/')
-            .ifBlank { "config" }
-        val fileName = if (safeName.endsWith(".json", ignoreCase = true)) safeName else "$safeName.json"
-        return HypnosiaPaths.configsDir.resolve(fileName)
+    private fun resolveLocalConfigFile(name: String): Path? {
+        val normalizedName = normalizeConfigName(name) ?: return null
+        val root = HypnosiaPaths.configsDir.normalize()
+        val file = root.resolve("$normalizedName.json").normalize()
+        return file.takeIf { it.startsWith(root) }
+    }
+
+    private fun normalizeConfigName(name: String): String? {
+        val raw = name.trim()
+        val withoutExtension = if (raw.endsWith(".json", ignoreCase = true)) raw.dropLast(5) else raw
+        val trimmed = withoutExtension
+            .trim(' ', '.')
+        if (trimmed.isBlank() || trimmed == "." || trimmed == "..") return null
+        if (trimmed.any { it == '/' || it == '\\' || it == ':' || it == '\u0000' }) return null
+        return trimmed.takeIf { localConfigNameRegex.matches(it) }
+    }
+
+    private fun validateConfigBytes(bytes: ByteArray): String? {
+        if (bytes.isEmpty()) return "CONFIG_EMPTY"
+        if (bytes.size > MAX_CLOUD_CONFIG_BYTES) return "CONFIG_TOO_LARGE"
+
+        val text = decodeUtf8Strict(bytes)
+            ?: return "CONFIG_ENCODING"
+        if (!looksLikeJsonObject(text)) return "CONFIG_JSON_OBJECT_REQUIRED"
+        if (!text.contains("\"format\"") || !text.contains("\"hypnosia-config\"")) return "CONFIG_FORMAT_REQUIRED"
+        return null
+    }
+
+    private fun decodeUtf8Strict(bytes: ByteArray): String? {
+        return runCatching {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+        }.getOrNull()
+    }
+
+    private fun looksLikeJsonObject(text: String): Boolean {
+        return JsonShapeParser(text).parseRootObject()
+    }
+
+    private class JsonShapeParser(private val text: String) {
+        private var index = 0
+
+        fun parseRootObject(): Boolean {
+            skipWhitespace()
+            if (!parseObject()) return false
+            skipWhitespace()
+            return index == text.length
+        }
+
+        private fun parseValue(): Boolean {
+            skipWhitespace()
+            if (index >= text.length) return false
+            return when (text[index]) {
+                '{' -> parseObject()
+                '[' -> parseArray()
+                '"' -> parseString()
+                't' -> consumeLiteral("true")
+                'f' -> consumeLiteral("false")
+                'n' -> consumeLiteral("null")
+                '-', in '0'..'9' -> parseNumber()
+                else -> false
+            }
+        }
+
+        private fun parseObject(): Boolean {
+            if (!consume('{')) return false
+            skipWhitespace()
+            if (consume('}')) return true
+            while (true) {
+                skipWhitespace()
+                if (!parseString()) return false
+                skipWhitespace()
+                if (!consume(':')) return false
+                if (!parseValue()) return false
+                skipWhitespace()
+                if (consume('}')) return true
+                if (!consume(',')) return false
+            }
+        }
+
+        private fun parseArray(): Boolean {
+            if (!consume('[')) return false
+            skipWhitespace()
+            if (consume(']')) return true
+            while (true) {
+                if (!parseValue()) return false
+                skipWhitespace()
+                if (consume(']')) return true
+                if (!consume(',')) return false
+            }
+        }
+
+        private fun parseString(): Boolean {
+            if (!consume('"')) return false
+            while (index < text.length) {
+                val char = text[index++]
+                when {
+                    char == '"' -> return true
+                    char.code < 0x20 -> return false
+                    char == '\\' -> {
+                        if (index >= text.length) return false
+                        when (text[index++]) {
+                            '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> Unit
+                            'u' -> repeat(4) {
+                                if (index >= text.length || text[index++] !in '0'..'9' && text[index - 1] !in 'a'..'f' && text[index - 1] !in 'A'..'F') {
+                                    return false
+                                }
+                            }
+                            else -> return false
+                        }
+                    }
+                }
+            }
+            return false
+        }
+
+        private fun parseNumber(): Boolean {
+            if (consume('-') && index >= text.length) return false
+            if (consume('0')) {
+                if (index < text.length && text[index] in '0'..'9') return false
+            } else if (!consumeDigits()) {
+                return false
+            }
+            if (consume('.')) {
+                if (!consumeDigits()) return false
+            }
+            if (index < text.length && (text[index] == 'e' || text[index] == 'E')) {
+                index++
+                if (index < text.length && (text[index] == '+' || text[index] == '-')) index++
+                if (!consumeDigits()) return false
+            }
+            return true
+        }
+
+        private fun consumeDigits(): Boolean {
+            val start = index
+            while (index < text.length && text[index] in '0'..'9') index++
+            return index > start
+        }
+
+        private fun consumeLiteral(literal: String): Boolean {
+            if (!text.regionMatches(index, literal, 0, literal.length)) return false
+            index += literal.length
+            return true
+        }
+
+        private fun consume(char: Char): Boolean {
+            if (index >= text.length || text[index] != char) return false
+            index++
+            return true
+        }
+
+        private fun skipWhitespace() {
+            while (index < text.length && text[index].isWhitespace()) index++
+        }
     }
 
     private fun configSummaries(body: String): List<CloudConfigSummary> {
@@ -480,13 +708,40 @@ object AccountManager {
     }
 
     private fun stringValue(json: String, name: String): String? {
-        val nullPattern = Regex(""""${Regex.escape(name)}"\s*:\s*null""")
-        if (nullPattern.containsMatchIn(json)) return null
-        return Regex(""""${Regex.escape(name)}"\s*:\s*"((?:\\.|[^"\\])*)"""")
-            .find(json)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.unescapeJson()
+        val key = "\"$name\""
+        var searchFrom = 0
+        while (true) {
+            val keyIndex = json.indexOf(key, searchFrom)
+            if (keyIndex < 0) return null
+            var index = keyIndex + key.length
+            while (index < json.length && json[index].isWhitespace()) index++
+            if (index >= json.length || json[index] != ':') {
+                searchFrom = keyIndex + key.length
+                continue
+            }
+            index++
+            while (index < json.length && json[index].isWhitespace()) index++
+            if (index + 4 <= json.length && json.regionMatches(index, "null", 0, 4)) return null
+            if (index >= json.length || json[index] != '"') return null
+            val valueStart = index + 1
+            val valueEnd = findJsonStringEnd(json, valueStart) ?: return null
+            return json.substring(valueStart, valueEnd).unescapeJson()
+        }
+    }
+
+    private fun findJsonStringEnd(value: String, start: Int): Int? {
+        var escaped = false
+        for (i in start until value.length) {
+            val c = value[i]
+            if (escaped) {
+                escaped = false
+            } else if (c == '\\') {
+                escaped = true
+            } else if (c == '"') {
+                return i
+            }
+        }
+        return null
     }
 
     private fun stringArray(json: String, name: String): List<String> {

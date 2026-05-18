@@ -1,15 +1,12 @@
 package dev.hypnosia.ui.profile
 
-import dev.hypnosia.license.HypnosiaPaths
+import dev.hypnosia.config.HypnosiaClientSettings
 import net.minecraft.client.MinecraftClient
-import java.nio.file.Files
 import java.time.LocalDate
 import java.time.YearMonth
-import java.util.Properties
-import kotlin.io.path.exists
 
 object HypnosiaPlaytime {
-    private const val FILE_NAME = "playtime.properties"
+    private const val KEY_PREFIX = "playtime."
     private const val SAVE_INTERVAL_TICKS = 20 * 20
 
     private val lock = Any()
@@ -106,23 +103,16 @@ object HypnosiaPlaytime {
         }
 
         loaded = true
-        val file = HypnosiaPaths.rootFile(FILE_NAME)
-        if (!file.exists()) {
-            return
-        }
-
         runCatching {
-            val properties = Properties()
-            Files.newInputStream(file).use(properties::load)
-            totalSeconds = properties.getProperty("total.seconds")?.toLongOrNull() ?: 0L
-            opensDate = properties.getProperty("opens.date")?.let(LocalDate::parse) ?: LocalDate.now()
-            opensToday = properties.getProperty("opens.today")?.toIntOrNull() ?: 0
-            properties.stringPropertyNames()
+            totalSeconds = HypnosiaClientSettings.long(KEY_PREFIX + "total.seconds", 0L)
+            opensDate = HypnosiaClientSettings.nullableString(KEY_PREFIX + "opens.date")?.let(LocalDate::parse) ?: LocalDate.now()
+            opensToday = HypnosiaClientSettings.int(KEY_PREFIX + "opens.today", 0)
+            HypnosiaClientSettings.keys(KEY_PREFIX + "day.")
                 .asSequence()
-                .filter { it.startsWith("day.") && it.endsWith(".seconds") }
+                .filter { it.endsWith(".seconds") }
                 .forEach { key ->
-                    val dateText = key.removePrefix("day.").removeSuffix(".seconds")
-                    val seconds = properties.getProperty(key)?.toLongOrNull() ?: 0L
+                    val dateText = key.removePrefix(KEY_PREFIX + "day.").removeSuffix(".seconds")
+                    val seconds = HypnosiaClientSettings.long(key, 0L)
                     runCatching { LocalDate.parse(dateText) }.getOrNull()?.let { date ->
                         if (seconds > 0L) {
                             dailySeconds[date] = seconds
@@ -133,19 +123,16 @@ object HypnosiaPlaytime {
     }
 
     private fun saveLocked() {
-        val file = HypnosiaPaths.rootFile(FILE_NAME)
-        val properties = Properties()
-        properties.setProperty("total.seconds", totalSeconds.toString())
-        properties.setProperty("opens.date", opensDate.toString())
-        properties.setProperty("opens.today", opensToday.toString())
+        val values = linkedMapOf<String, String>()
+        values[KEY_PREFIX + "total.seconds"] = totalSeconds.toString()
+        values[KEY_PREFIX + "opens.date"] = opensDate.toString()
+        values[KEY_PREFIX + "opens.today"] = opensToday.toString()
         dailySeconds.entries
             .sortedBy { it.key }
             .takeLast(420)
             .forEach { (date, seconds) ->
-                properties.setProperty("day.$date.seconds", seconds.toString())
+                values[KEY_PREFIX + "day.$date.seconds"] = seconds.toString()
             }
-        Files.newOutputStream(file).use { output ->
-            properties.store(output, "Hypnosia local playtime")
-        }
+        HypnosiaClientSettings.setAll(values)
     }
 }

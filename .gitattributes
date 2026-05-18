@@ -1,16 +1,9 @@
-* text=auto
-
-*.kt text eol=lf
-*.kts text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.properties text eol=lf
-*.vsh text eol=lf
-*.fsh text eol=lf
-*.glsl text eol=lf
-gradlew text eol=lf
-*.bat text eol=crlf
-
-*.png binary
-*.ttf binary
-*.otf binary
+/license-server/** export-ignore
+/license-admin/** export-ignore
+/CLAUDE.md export-ignore
+/docs/license-*.md export-ignore
+/docs/public-repo-security.md export-ignore
+/docs/*deploy*.md export-ignore
+/docs/*server*.md export-ignore
+/figma.properties export-ignore
+/.env export-ignore

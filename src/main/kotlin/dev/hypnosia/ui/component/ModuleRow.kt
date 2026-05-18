@@ -1,6 +1,7 @@
 package dev.hypnosia.ui.component
 
 import dev.hypnosia.HypnosiaClient
+import dev.hypnosia.config.ThemeSettings
 import dev.hypnosia.ui.animation.SpringColor
 import dev.hypnosia.ui.layout.BaseUiNode
 import dev.hypnosia.ui.layout.Constraints
@@ -21,6 +22,7 @@ class ModuleRow(
     private val iconPath: String = "plug_socket.png",
     isActive: Boolean = false,
     private val isSettingsOpen: () -> Boolean = { false },
+    private val settingsEnabled: Boolean = true,
     private val onActiveChanged: (Boolean) -> Unit = {},
     private val onSettingsChanged: (Boolean) -> Unit = {},
 ) : BaseUiNode(
@@ -53,7 +55,7 @@ class ModuleRow(
         headerColor.target = if (active) SELECTED_HEADER else IDLE_HEADER
         titleColor.target = if (active) SELECTED_TITLE else IDLE_TITLE
 
-        HypnosiaRenderUtils.drawFigmaBox(
+        HypnosiaRenderUtils.drawThemedBox(
             context = context,
             x = bounds.x,
             y = bounds.y,
@@ -61,12 +63,13 @@ class ModuleRow(
             height = HEIGHT,
             radius = 10.0f,
             bgColor = withAlpha(BACKGROUND, drawAlpha),
+            role = ThemeSettings.ThemeRole.CARD,
         )
 
         val animatedStroke = withAlpha(strokeColor.update(seconds), drawAlpha)
         val animatedHeader = withAlpha(headerColor.update(seconds), drawAlpha)
 
-        HypnosiaRenderUtils.drawFigmaBox(
+        HypnosiaRenderUtils.drawThemedBox(
             context = context,
             x = bounds.x,
             y = bounds.y,
@@ -74,8 +77,9 @@ class ModuleRow(
             height = HEADER_HEIGHT,
             radius = 10.0f,
             bgColor = animatedHeader,
+            role = ThemeSettings.ThemeRole.HEADER,
         )
-        HypnosiaRenderUtils.drawFigmaBox(
+        HypnosiaRenderUtils.drawThemedBox(
             context = context,
             x = bounds.x,
             y = bounds.y + HEADER_HEIGHT - 10.0f,
@@ -83,8 +87,9 @@ class ModuleRow(
             height = 10.0f,
             radius = 0.0f,
             bgColor = animatedHeader,
+            role = ThemeSettings.ThemeRole.HEADER,
         )
-        HypnosiaRenderUtils.drawFigmaBox(
+        HypnosiaRenderUtils.drawThemedBox(
             context = context,
             x = bounds.x,
             y = bounds.y,
@@ -94,6 +99,7 @@ class ModuleRow(
             bgColor = 0x00000000,
             strokeColor = animatedStroke,
             strokeThickness = 1.0f,
+            role = ThemeSettings.ThemeRole.CARD,
         )
 
         drawText(
@@ -118,7 +124,7 @@ class ModuleRow(
             return true
         }
 
-        if (contains(rightButtonRect(), mouseX, mouseY)) {
+        if (settingsEnabled && contains(rightButtonRect(), mouseX, mouseY)) {
             onSettingsChanged(!isSettingsOpen())
             return true
         }
@@ -148,6 +154,8 @@ class ModuleRow(
             height = PLUG_ICON_SIZE,
             alpha = drawAlpha,
         )
+
+        if (!settingsEnabled) return
 
         drawIconFrame(
             context = context,
@@ -200,7 +208,7 @@ class ModuleRow(
         stroke: Int,
         drawAlpha: Float,
     ) {
-        HypnosiaRenderUtils.drawFigmaBox(
+        HypnosiaRenderUtils.drawThemedBox(
             context = context,
             x = x,
             y = y,
@@ -210,6 +218,7 @@ class ModuleRow(
             bgColor = withAlpha(fill, drawAlpha),
             strokeColor = withAlpha(stroke, drawAlpha),
             strokeThickness = 1.0f,
+            role = ThemeSettings.ThemeRole.ICON_BUTTON,
         )
     }
 

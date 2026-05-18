@@ -1,6 +1,10 @@
 package dev.hypnosia.ui.layout
 
 import dev.hypnosia.HypnosiaClient
+import dev.hypnosia.config.HypnosiaConfigProfiles
+import dev.hypnosia.config.HypnosiaClientSettings
+import dev.hypnosia.config.IconSettings
+import dev.hypnosia.config.ThemeSettings
 import dev.hypnosia.hud.HudModuleSettings
 import dev.hypnosia.hud.ModuleHotkeys
 import dev.hypnosia.hud.TargetHudSettings
@@ -13,6 +17,8 @@ import dev.hypnosia.license.CloudListResult
 import dev.hypnosia.license.CloudLoadResult
 import dev.hypnosia.license.CloudSaveResult
 import dev.hypnosia.license.HypnosiaPaths
+import dev.hypnosia.other.FriendsManager
+import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.ui.animation.FigmaAnimation
 import dev.hypnosia.ui.animation.SpringFloat
 import dev.hypnosia.ui.component.CategorySidebar
@@ -21,19 +27,21 @@ import dev.hypnosia.ui.component.ModuleRow
 import dev.hypnosia.ui.render.FigmaTextRenderer
 import dev.hypnosia.ui.render.HypnosiaRenderUtils
 import dev.hypnosia.ui.render.HypnosiaScissor
+import dev.hypnosia.world.WorldVisualSettings
 import dev.hypnosia.ui.profile.HypnosiaPlaytime
+import dev.hypnosia.visual.AspectRatioSettings
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.render.entity.model.EntityModelLayers
 import net.minecraft.client.render.entity.model.PlayerEntityModel
 import net.minecraft.util.Identifier
+import org.joml.Matrix3x2f
 import org.lwjgl.glfw.GLFW
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
-import java.util.Properties
 
 object HypnosiaMainLayout {
     private const val WINDOW_WIDTH = 698.0f
@@ -57,29 +65,14 @@ object HypnosiaMainLayout {
 
     private val modulesByCategory = mapOf(
         HypnosiaCategory.Visuals to listOf(
-            ModuleEntry("visuals.fullbright", HypnosiaCategory.Visuals, "Fullbright", true),
-            ModuleEntry("visuals.entity_esp", HypnosiaCategory.Visuals, "Entity ESP", false),
-            ModuleEntry("visuals.block_outline", HypnosiaCategory.Visuals, "Block Outline", true),
-            ModuleEntry("visuals.item_glow", HypnosiaCategory.Visuals, "Item Glow", false),
-            ModuleEntry("visuals.tracers", HypnosiaCategory.Visuals, "Tracers", false),
-            ModuleEntry("visuals.no_render", HypnosiaCategory.Visuals, "No Render", false),
+            ModuleEntry("visuals.aspect_ratio", HypnosiaCategory.Visuals, "Aspect Ratio", AspectRatioSettings.isEnabled(), hasSettings = true),
         ),
         HypnosiaCategory.World to listOf(
-            ModuleEntry("world.auto_tool", HypnosiaCategory.World, "Auto Tool", false),
-            ModuleEntry("world.fast_place", HypnosiaCategory.World, "Fast Place", true),
-            ModuleEntry("world.scaffold_assist", HypnosiaCategory.World, "Scaffold Assist", false),
-            ModuleEntry("world.safe_walk", HypnosiaCategory.World, "Safe Walk", false),
-            ModuleEntry("world.ore_marker", HypnosiaCategory.World, "Ore Marker", true),
-            ModuleEntry("world.weather_control", HypnosiaCategory.World, "Weather Control", false),
+            ModuleEntry("world.fullbright", HypnosiaCategory.World, "Fullbright", moduleEnabled("world.fullbright", moduleEnabled("visuals.fullbright", true)), hasSettings = false),
+            ModuleEntry("world.custom_fog", HypnosiaCategory.World, "Custom Fog", WorldVisualSettings.customFogEnabled(), hasSettings = true),
         ),
         HypnosiaCategory.Client to listOf(
-            ModuleEntry("client.click_gui", HypnosiaCategory.Client, "Click GUI", true),
-            ModuleEntry("client.config_sync", HypnosiaCategory.Client, "Config Sync", false),
-            ModuleEntry("client.keybinds", HypnosiaCategory.Client, "Keybinds", false),
-            ModuleEntry("client.notifications", HypnosiaCategory.Client, "Notifications", true),
-            ModuleEntry("client.profiles", HypnosiaCategory.Client, "Profiles", false),
-            ModuleEntry("client.panic_mode", HypnosiaCategory.Client, "Panic Mode", false),
-            ModuleEntry("client.icons", HypnosiaCategory.Client, "Icons", false),
+            ModuleEntry("client.icons", HypnosiaCategory.Client, "Icons", moduleEnabled("client.icons", true)),
         ),
         HypnosiaCategory.Hud to listOf(
             ModuleEntry("hud.watermark", HypnosiaCategory.Hud, "Watermark", true),
@@ -93,54 +86,53 @@ object HypnosiaMainLayout {
             ModuleEntry("hud.hotkeys", HypnosiaCategory.Hud, "HotKey", HudModuleSettings.isEnabled(HudModuleSettings.Module.HOTKEYS)),
         ),
         HypnosiaCategory.Other to listOf(
-            ModuleEntry("other.friends", HypnosiaCategory.Other, "Friends", true),
-            ModuleEntry("other.streamer_mode", HypnosiaCategory.Other, "Streamer Mode", false),
-            ModuleEntry("other.chat_tools", HypnosiaCategory.Other, "Chat Tools", false),
-            ModuleEntry("other.discord_rpc", HypnosiaCategory.Other, "Discord RPC", false),
-            ModuleEntry("other.debug_overlay", HypnosiaCategory.Other, "Debug Overlay", false),
-            ModuleEntry("other.about", HypnosiaCategory.Other, "About", false),
+            ModuleEntry("other.friends", HypnosiaCategory.Other, "Friends", moduleEnabled("other.friends", true)),
+            ModuleEntry("other.streamer_mode", HypnosiaCategory.Other, "Streamer Mode", StreamerModeSettings.isEnabled(), hasSettings = true),
+            ModuleEntry("other.discord_rpc", HypnosiaCategory.Other, "Discord RPC", moduleEnabled("other.discord_rpc", false)),
         ),
     )
 
     private object MenuStateStorage {
-        private const val FILE_NAME = "menu-state.properties"
+        private const val KEY_PREFIX = "menu."
 
         data class Snapshot(
             val page: String,
             val category: String,
             val selectedModuleId: String?,
+            val offsetX: Float,
+            val offsetY: Float,
         )
 
         fun load(): Snapshot {
             return runCatching {
-                val file = HypnosiaPaths.rootFile(FILE_NAME)
-                if (!Files.exists(file)) {
-                    return@runCatching Snapshot(Page.Welcome.name, HypnosiaCategory.Home.name, null)
-                }
-                val props = Properties()
-                Files.newInputStream(file).use(props::load)
                 Snapshot(
-                    page = props.getProperty("page", Page.Welcome.name),
-                    category = props.getProperty("category", HypnosiaCategory.Home.name),
-                    selectedModuleId = props.getProperty("selectedModuleId")?.takeIf { it.isNotBlank() },
+                    page = HypnosiaClientSettings.string(KEY_PREFIX + "page", Page.Welcome.name),
+                    category = HypnosiaClientSettings.string(KEY_PREFIX + "category", HypnosiaCategory.Home.name),
+                    selectedModuleId = HypnosiaClientSettings.nullableString(KEY_PREFIX + "selectedModuleId"),
+                    offsetX = HypnosiaClientSettings.string(KEY_PREFIX + "offsetX", "0").toFloatOrNull() ?: 0.0f,
+                    offsetY = HypnosiaClientSettings.string(KEY_PREFIX + "offsetY", "0").toFloatOrNull() ?: 0.0f,
                 )
-            }.getOrDefault(Snapshot(Page.Welcome.name, HypnosiaCategory.Home.name, null))
+            }.getOrDefault(Snapshot(Page.Welcome.name, HypnosiaCategory.Home.name, null, 0.0f, 0.0f))
         }
 
-        fun save(page: String, category: String, selectedModuleId: String?) {
+        fun save(page: String, category: String, selectedModuleId: String?, offsetX: Float, offsetY: Float) {
             runCatching {
-                val props = Properties()
-                props["page"] = page
-                props["category"] = category
-                selectedModuleId?.let { props["selectedModuleId"] = it }
-                Files.newOutputStream(HypnosiaPaths.rootFile(FILE_NAME)).use {
-                    props.store(it, "Hypnosia menu state")
-                }
+                HypnosiaClientSettings.setAll(
+                    mapOf(
+                        KEY_PREFIX + "page" to page,
+                        KEY_PREFIX + "category" to category,
+                        KEY_PREFIX + "selectedModuleId" to selectedModuleId,
+                        KEY_PREFIX + "offsetX" to offsetX.toInt().toString(),
+                        KEY_PREFIX + "offsetY" to offsetY.toInt().toString(),
+                    ),
+                )
             }
         }
     }
 
     fun create(): FigmaRoot {
+        HypnosiaConfigProfiles.bootstrap()
+        ThemeSettings.writeLockedDefaults()
         return FigmaRoot(
             designWidth = WINDOW_WIDTH,
             designHeight = WINDOW_HEIGHT,
@@ -150,11 +142,14 @@ object HypnosiaMainLayout {
         )
     }
 
+    private fun moduleEnabled(id: String, default: Boolean): Boolean =
+        HypnosiaClientSettings.boolean("module.$id.enabled", default)
+
     private fun profileName(): String {
         val client = MinecraftClient.getInstance()
         val minecraftName = client.player?.gameProfile?.name ?: client.session.username
         val session = (AccountManager.state as? AccountState.Valid)?.session
-        return session?.displayName?.takeIf { it.isNotBlank() } ?: minecraftName
+        return StreamerModeSettings.displayName(session?.displayName?.takeIf { it.isNotBlank() } ?: minecraftName)
     }
 
     private fun profileRoleLine(): String {
@@ -175,6 +170,9 @@ object HypnosiaMainLayout {
         private var settingsOpen = false
         private var searchFocused = false
         private var searchQuery = ""
+        private var menuOffsetX = restoredMenuState.offsetX.coerceIn(-900.0f, 900.0f)
+        private var menuOffsetY = restoredMenuState.offsetY.coerceIn(-600.0f, 600.0f)
+        private var draggingMenu = false
         private var slideDirection = 1.0f
         private val transition = SpringFloat(1.0f, stiffness = 420.0f, damping = 38.0f)
         private val accountButtonBackground = dev.hypnosia.ui.animation.SpringColor(SURFACE, stiffness = 380.0f, damping = 42.0f)
@@ -218,7 +216,7 @@ object HypnosiaMainLayout {
             },
         )
 
-        private val homeContent = HomeContentNode()
+        private val homeContent = HomeContentNode(onConfigApplied = ::syncModuleEntriesFromSettings)
         private val welcomeContent = WelcomeContentNode()
         private val profileContent = ProfileCalendarContentNode()
         private val accountWelcomeContent = AccountWelcomeContentNode(
@@ -250,6 +248,24 @@ object HypnosiaMainLayout {
             close = ::closeSettings,
         )
 
+        private fun syncModuleEntriesFromSettings() {
+            modulesByCategory.values.flatten().forEach { module ->
+                module.enabled = when (module.id) {
+                    "hud.hotbar" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.HOTBAR)
+                    "hud.armor" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.ARMOR)
+                    "hud.target" -> TargetHudSettings.isEnabled()
+                    "hud.player_info" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.PLAYER_INFO)
+                    "hud.inventory" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.INVENTORY)
+                    "hud.cooldowns" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.COOLDOWNS)
+                    "hud.potions" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.POTIONS)
+                    "hud.hotkeys" -> HudModuleSettings.isEnabled(HudModuleSettings.Module.HOTKEYS)
+                    else -> HypnosiaClientSettings.boolean("module.${module.id}.enabled", module.enabled)
+                }
+            }
+            categoryGrids.values.forEach { it.rebuild() }
+            searchGrid.rebuild()
+        }
+
         init {
             restoreSelectedModule(restoredMenuState.selectedModuleId)
         }
@@ -262,20 +278,24 @@ object HypnosiaMainLayout {
         }
 
         override fun layout(x: Float, y: Float, width: Float, height: Float) {
-            super.layout(x, y, WINDOW_WIDTH, WINDOW_HEIGHT)
-            sidebar.layout(x, y, CategorySidebar.WIDTH, CategorySidebar.HEIGHT)
-            contentNodes().forEach { it.layout(x + CONTENT_X, y + CONTENT_Y, CONTENT_WIDTH, CONTENT_HEIGHT) }
-            settingsDrawer.layout(x + WINDOW_WIDTH + 8.0f, y + CONTENT_Y, ModuleSettingsDrawerNode.WIDTH, ModuleSettingsDrawerNode.HEIGHT)
+            val menuX = x + menuOffsetX
+            val menuY = y + menuOffsetY
+            super.layout(menuX, menuY, WINDOW_WIDTH, WINDOW_HEIGHT)
+            sidebar.layout(menuX, menuY, CategorySidebar.WIDTH, CategorySidebar.HEIGHT)
+            contentNodes().forEach { it.layout(menuX + CONTENT_X, menuY + CONTENT_Y, CONTENT_WIDTH, CONTENT_HEIGHT) }
+            settingsDrawer.layout(menuX + WINDOW_WIDTH + 8.0f, menuY + CONTENT_Y, ModuleSettingsDrawerNode.WIDTH, ModuleSettingsDrawerNode.HEIGHT)
         }
 
         override fun render(context: DrawContext) {
-            renderBase(context)
-            sidebar.render(context)
-            renderAccountNavButton(context)
-            renderTopBar(context)
-            renderContent(context)
-            if (settingsOpen) {
-                settingsDrawer.render(context)
+            ThemeSettings.themedUi {
+                renderBase(context)
+                sidebar.render(context)
+                renderAccountNavButton(context)
+                renderTopBar(context)
+                renderContent(context)
+                if (settingsOpen) {
+                    settingsDrawer.render(context)
+                }
             }
         }
 
@@ -325,12 +345,21 @@ object HypnosiaMainLayout {
                 return true
             }
 
+            if (contains(mouseX, mouseY, bounds.x, bounds.y, WINDOW_WIDTH, 51.0f)) {
+                draggingMenu = true
+                return true
+            }
+
             searchFocused = false
             return activeContent().mouseClicked(mouseX, mouseY, button)
         }
 
         override fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean {
-            return if (settingsOpen && settingsDrawer.mouseReleased(mouseX, mouseY, button)) {
+            val wasDraggingMenu = draggingMenu
+            draggingMenu = false
+            return if (wasDraggingMenu) {
+                true
+            } else if (settingsOpen && settingsDrawer.mouseReleased(mouseX, mouseY, button)) {
                 true
             } else {
                 activeContent().mouseReleased(mouseX, mouseY, button)
@@ -338,6 +367,12 @@ object HypnosiaMainLayout {
         }
 
         override fun mouseDragged(mouseX: Float, mouseY: Float, button: Int, deltaX: Float, deltaY: Float): Boolean {
+            if (button == 0 && draggingMenu) {
+                menuOffsetX = (menuOffsetX + deltaX).coerceIn(-900.0f, 900.0f)
+                menuOffsetY = (menuOffsetY + deltaY).coerceIn(-600.0f, 600.0f)
+                saveMenuState()
+                return true
+            }
             return if (settingsOpen && settingsDrawer.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
                 true
             } else {
@@ -377,6 +412,9 @@ object HypnosiaMainLayout {
         }
 
         override fun charTyped(chr: Char, modifiers: Int): Boolean {
+            if (settingsOpen && settingsDrawer.charTyped(chr, modifiers)) {
+                return true
+            }
             if (page == Page.Search && searchFocused) {
                 if (chr.isISOControl()) {
                     return false
@@ -417,6 +455,11 @@ object HypnosiaMainLayout {
         }
 
         private fun setModuleSettingsOpen(module: ModuleEntry, open: Boolean) {
+            if (module.id == "client.theme") {
+                closeSettings()
+                ThemeSettings.writeLockedDefaults()
+                return
+            }
             modulesByCategory.values.flatten().forEach { entry ->
                 if (entry != module) {
                     entry.settingsOpen = false
@@ -464,6 +507,8 @@ object HypnosiaMainLayout {
                 page = page.name,
                 category = activeCategory.name,
                 selectedModuleId = selectedModule?.takeIf { settingsOpen }?.id,
+                offsetX = menuOffsetX,
+                offsetY = menuOffsetY,
             )
         }
 
@@ -512,7 +557,7 @@ object HypnosiaMainLayout {
                 shadowBlur = 4.0f,
                 color = 0x40000000,
             )
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = bounds.x,
                 y = bounds.y,
@@ -522,6 +567,7 @@ object HypnosiaMainLayout {
                 bgColor = SURFACE,
                 strokeColor = STROKE,
                 strokeThickness = 1.0f,
+                role = ThemeSettings.ThemeRole.MAIN_PANEL,
             )
             rect(context, bounds.x - 0.5f, bounds.y + 50.5f, WINDOW_WIDTH, 1.0f, STROKE)
             rect(context, bounds.x + 50.5f, bounds.y + 51.5f, 1.0f, 412.0f, STROKE)
@@ -547,7 +593,7 @@ object HypnosiaMainLayout {
             val iconScale = 1.0f + (HOVER_BUTTON_SIZE / ACCOUNT_BUTTON_SIZE - 1.0f) * hover
             val iconSize = ACCOUNT_ICON_SIZE * iconScale
 
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = visualX,
                 y = visualY,
@@ -557,6 +603,7 @@ object HypnosiaMainLayout {
                 bgColor = accountButtonBackground.update(seconds),
                 strokeColor = accountButtonStroke.update(seconds),
                 strokeThickness = accountButtonStrokeWidth.update(seconds),
+                role = ThemeSettings.ThemeRole.ICON_BUTTON,
             )
             icon(
                 context = context,
@@ -571,7 +618,7 @@ object HypnosiaMainLayout {
 
         private fun renderTopBar(context: DrawContext) {
             val searchActive = page == Page.Search
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = bounds.x + 50.5f,
                 y = bounds.y + 7.5f,
@@ -581,6 +628,7 @@ object HypnosiaMainLayout {
                 bgColor = if (searchActive) WHITE else SURFACE,
                 strokeColor = if (searchActive) WHITE else STROKE,
                 strokeThickness = if (searchActive) 2.0f else 1.0f,
+                role = if (searchActive) ThemeSettings.ThemeRole.INPUT else ThemeSettings.ThemeRole.BUTTON,
             )
             icon(context, "search.png", bounds.x + 182.5f, bounds.y + 8.5f, 31.0f, 31.0f, if (searchActive) 0xFF0D0D0D.toInt() else WHITE)
             if (searchActive && searchQuery.isNotEmpty()) {
@@ -598,7 +646,7 @@ object HypnosiaMainLayout {
                 )
             }
 
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = bounds.x + 310.5f,
                 y = bounds.y + 7.5f,
@@ -608,6 +656,7 @@ object HypnosiaMainLayout {
                 bgColor = SURFACE,
                 strokeColor = STROKE,
                 strokeThickness = 1.0f,
+                role = ThemeSettings.ThemeRole.BUTTON,
             )
             drawTextBox(
                 context = context,
@@ -635,7 +684,7 @@ object HypnosiaMainLayout {
                 )
             }
 
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = bounds.x + 552.5f,
                 y = bounds.y + 7.5f,
@@ -645,6 +694,7 @@ object HypnosiaMainLayout {
                 bgColor = SURFACE,
                 strokeColor = STROKE,
                 strokeThickness = 1.0f,
+                role = ThemeSettings.ThemeRole.BUTTON,
             )
             drawTextBox(
                 context = context,
@@ -673,7 +723,7 @@ object HypnosiaMainLayout {
         }
 
         private fun renderContent(context: DrawContext) {
-            HypnosiaRenderUtils.drawFigmaBox(
+            HypnosiaRenderUtils.drawThemedBox(
                 context = context,
                 x = bounds.x + CONTENT_X,
                 y = bounds.y + CONTENT_Y,
@@ -683,6 +733,7 @@ object HypnosiaMainLayout {
                 bgColor = SURFACE,
                 strokeColor = STROKE,
                 strokeThickness = 1.0f,
+                role = ThemeSettings.ThemeRole.MAIN_PANEL,
             )
 
             val progress = transition.update(UiInputState.frameSeconds).coerceIn(0.0f, 1.0f)
@@ -818,6 +869,10 @@ object HypnosiaMainLayout {
             return scroll.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)
         }
 
+        fun rebuild() {
+            appliedQuery = null
+        }
+
         private fun updateVisibleRows() {
             val query = queryProvider().trim().lowercase()
             if (query == appliedQuery) {
@@ -846,6 +901,7 @@ object HypnosiaMainLayout {
                             iconPath = "plug_socket.png",
                             isActive = module.enabled,
                             isSettingsOpen = { module.settingsOpen },
+                            settingsEnabled = module.hasSettings,
                             onActiveChanged = { enabled ->
                                 module.enabled = enabled
                                 when (module.id) {
@@ -857,6 +913,12 @@ object HypnosiaMainLayout {
                                     "hud.cooldowns" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.COOLDOWNS, enabled)
                                     "hud.potions" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.POTIONS, enabled)
                                     "hud.hotkeys" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.HOTKEYS, enabled)
+                                    "world.fullbright" -> WorldVisualSettings.setFullbrightEnabled(enabled)
+                                    "world.custom_fog" -> WorldVisualSettings.setCustomFogEnabled(enabled)
+                                    "visuals.aspect_ratio" -> AspectRatioSettings.setEnabled(enabled)
+                                    "other.friends" -> FriendsManager.setEnabled(enabled)
+                                    "other.streamer_mode" -> StreamerModeSettings.setEnabled(enabled)
+                                    else -> HypnosiaClientSettings.set("module.${module.id}.enabled", enabled.toString())
                                 }
                             },
                             onSettingsChanged = { open -> onSettings(module, open) },
@@ -1484,7 +1546,7 @@ object HypnosiaMainLayout {
                             cloudConfigs = result.configs
                             cloudUsed = result.used
                             cloudLimit = result.limit
-                            statusMessage = ""
+                            if (statusMessage.startsWith("Cloud list:")) statusMessage = ""
                         }
                         is CloudListResult.Error -> statusMessage = "Cloud list: ${result.reason}"
                     }
@@ -1566,9 +1628,9 @@ object HypnosiaMainLayout {
             alpha: Float,
             body: () -> Unit,
         ) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, height, 10.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(0xFF272727.toInt(), alpha), 1.0f)
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, 20.0f, 10.0f, withAlpha(0xFF191919.toInt(), alpha))
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y + 10.0f, width, 10.0f, 0.0f, withAlpha(0xFF191919.toInt(), alpha))
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, width, height, 10.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(0xFF272727.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, width, 20.0f, 10.0f, withAlpha(0xFF191919.toInt(), alpha), role = ThemeSettings.ThemeRole.HEADER)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y + 10.0f, width, 10.0f, 0.0f, withAlpha(0xFF191919.toInt(), alpha), role = ThemeSettings.ThemeRole.HEADER)
             drawTextBox(context, title, x + 5.0f, y + 1.0f, width - 10.0f, 16.0f, withAlpha(WHITE, alpha), titleStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
             body()
         }
@@ -1605,7 +1667,7 @@ object HypnosiaMainLayout {
                 focused -> withAlpha(WHITE, alpha)
                 else -> withAlpha(0xFF272727.toInt(), alpha)
             }
-            HypnosiaRenderUtils.drawFigmaBox(context, fieldX, fieldY, fieldWidth, 18.0f, 5.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), strokeColor, if (focused) 1.2f else 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, fieldX, fieldY, fieldWidth, 18.0f, 5.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), strokeColor, if (focused) 1.2f else 1.0f, ThemeSettings.ThemeRole.INPUT)
             val saved = savedValue?.takeIf { it.isNotBlank() }
             val displayText = when {
                 saving -> "Saving..."
@@ -1618,7 +1680,7 @@ object HypnosiaMainLayout {
         }
 
         private fun drawPillField(context: DrawContext, x: Float, y: Float, width: Float, text: String, alpha: Float, muted: Boolean = false) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, 24.0f, 13.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(0xFF272727.toInt(), alpha), 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, width, 24.0f, 13.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(0xFF272727.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.INPUT)
             drawTextBox(
                 context = context,
                 text = text,
@@ -1636,7 +1698,7 @@ object HypnosiaMainLayout {
         private fun drawCloudKeyInput(context: DrawContext, x: Float, y: Float, width: Float, alpha: Float) {
             val focused = focusedAccountField == AccountField.CloudKey
             val stroke = if (focused) WHITE else 0xFF272727.toInt()
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, 24.0f, 13.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(stroke, alpha), if (focused) 1.2f else 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, width, 24.0f, 13.0f, withAlpha(0xFF0D0D0D.toInt(), alpha), withAlpha(stroke, alpha), if (focused) 1.2f else 1.0f, ThemeSettings.ThemeRole.INPUT)
             val caret = if (focused && !cloudKeyLoading && (System.nanoTime() / 500_000_000L) % 2L == 0L) "_" else ""
             val text = when {
                 cloudKeyLoading -> "Loading..."
@@ -1728,12 +1790,13 @@ object HypnosiaMainLayout {
         private data class ModelTuning(
             val yaw: Float = -32.56f,
             val phi: Float = -17.95f,
-            val x: Float = 75.07f,
-            val y: Float = -5.10f,
-            val scale: Float = 45.31f,
+            val x: Float = 38.0f,
+            val y: Float = 42.0f,
+            val scale: Float = 82.0f,
         )
 
         private val modelTuning = ModelTuning()
+        private var cachedPlayerModel: PlayerEntityModel? = null
 
         override fun measure(constraints: Constraints): Size = constraints.constrain(Size(CONTENT_WIDTH, CONTENT_HEIGHT))
 
@@ -1775,7 +1838,7 @@ object HypnosiaMainLayout {
         }
 
         private fun drawSummaryCard(context: DrawContext, x: Float, y: Float, dotColor: Int, value: String, label: String, alpha: Float) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 56.0f, 64.0f, 8.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF26262A.toInt(), alpha), 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 56.0f, 64.0f, 8.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF26262A.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
             HypnosiaRenderUtils.drawFigmaBox(context, x + 7.0f, y + 9.0f, 8.0f, 8.0f, 4.0f, withAlpha(dotColor, alpha))
             drawTextBox(
                 context = context,
@@ -1818,7 +1881,7 @@ object HypnosiaMainLayout {
             alpha: Float,
             playtime: HypnosiaPlaytime.Snapshot,
         ) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 354.0f, 248.0f, 9.0f, withAlpha(SURFACE, alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 354.0f, 248.0f, 9.0f, withAlpha(SURFACE, alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
             drawTextBox(context, monthTitle(playtime), x + 15.0f, y + 13.0f, 110.0f, 16.0f, withAlpha(0xFFD6D6D8.toInt(), alpha), calendarTitleStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
             drawTextBox(context, "less", x + 238.0f, y + 13.0f, 28.0f, 12.0f, withAlpha(0xFF77777D.toInt(), alpha), tinyStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
             drawLegendDot(context, x + 270.5f, y + 16.5f, 5.0f, 0.18f, alpha)
@@ -1871,7 +1934,7 @@ object HypnosiaMainLayout {
         }
 
         private fun drawProfileSkinPanel(context: DrawContext, x: Float, y: Float, alpha: Float) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 196.0f, 260.0f, 9.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 196.0f, 260.0f, 9.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
             drawTextBox(
                 context = context,
                 text = profileName(),
@@ -1908,7 +1971,7 @@ object HypnosiaMainLayout {
             playtime: HypnosiaPlaytime.Snapshot,
         ) {
             val graphPoints = weekGraphPoints(playtime)
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 354.0f, 56.0f, 8.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 354.0f, 56.0f, 8.0f, withAlpha(0xFF0D0D0E.toInt(), alpha), withAlpha(0xFF242428.toInt(), alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
             drawTextBox(context, "Last 7 days active", x + 11.0f, y + 6.0f, 126.0f, 13.0f, withAlpha(0xFFD6D6D8.toInt(), alpha), graphTitleStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
             drawTextBox(context, weekPeakHours(playtime), x + 308.0f, y + 5.0f, 38.0f, 12.0f, withAlpha(0xFF8C8C93.toInt(), alpha), graphSmallStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
             drawTextBox(context, "0h", x + 310.0f, y + 25.0f, 28.0f, 10.0f, withAlpha(0xFF6F6F76.toInt(), alpha), graphTinyStyle, FigmaTextRenderer.HorizontalAlign.Left, FigmaTextRenderer.VerticalAlign.Top)
@@ -1954,24 +2017,50 @@ object HypnosiaMainLayout {
             val player = client.player ?: return
 
             val skin = player.skin
-            val model = PlayerEntityModel(client.loadedEntityModels.getModelPart(EntityModelLayers.PLAYER), false)
+            val model = cachedPlayerModel ?: PlayerEntityModel(client.loadedEntityModels.getModelPart(EntityModelLayers.PLAYER), false).also {
+                cachedPlayerModel = it
+            }
             model.setVisible(true)
 
+            val matrix = Matrix3x2f(context.matrices)
+            val localLeft = x + modelTuning.x
+            val localTop = y + modelTuning.y
+            val guiLeft = transformX(matrix, localLeft, localTop)
+            val guiTop = transformY(matrix, localLeft, localTop)
+            val scaleX = matrix.m00().takeIf { it != 0.0f } ?: 1.0f
+            val scaleY = matrix.m11().takeIf { it != 0.0f } ?: scaleX
+            val modelScale = modelTuning.scale * scaleX.coerceAtLeast(0.01f)
+            val modelWidth = 120.0f * scaleX
+            val modelHeight = 210.0f * scaleY
+
             HypnosiaScissor.withLocalRect(context, Rect(x + 1.0f, y + 40.0f, 194.0f, 219.0f)) {
-                context.addPlayerSkin(
-                    model,
-                    skin.body().texturePath(),
-                    modelTuning.scale,
-                    modelTuning.phi,
-                    modelTuning.yaw,
-                    PLAYER_SKIN_Y_PIVOT,
-                    (x + modelTuning.x).toInt(),
-                    (y + modelTuning.y).toInt(),
-                    (x + modelTuning.x + 120.0f).toInt(),
-                    (y + modelTuning.y + 210.0f).toInt(),
-                )
+                context.matrices.pushMatrix()
+                context.matrices.scale(1.0f / scaleX, 1.0f / scaleY)
+                context.matrices.translate(-matrix.m20(), -matrix.m21())
+                try {
+                    context.addPlayerSkin(
+                        model,
+                        skin.body().texturePath(),
+                        modelScale,
+                        modelTuning.phi,
+                        modelTuning.yaw,
+                        PLAYER_SKIN_Y_PIVOT,
+                        guiLeft.toInt(),
+                        guiTop.toInt(),
+                        (guiLeft + modelWidth).toInt(),
+                        (guiTop + modelHeight).toInt(),
+                    )
+                } finally {
+                    context.matrices.popMatrix()
+                }
             }
         }
+
+        private fun transformX(matrix: Matrix3x2f, x: Float, y: Float): Float =
+            matrix.m00() * x + matrix.m10() * y + matrix.m20()
+
+        private fun transformY(matrix: Matrix3x2f, x: Float, y: Float): Float =
+            matrix.m01() * x + matrix.m11() * y + matrix.m21()
 
         private fun formatTotalPlaytime(totalSeconds: Long): String {
             val hours = totalSeconds / 3600.0
@@ -2054,7 +2143,9 @@ object HypnosiaMainLayout {
         }
     }
 
-    private class HomeContentNode : BaseUiNode(LayoutSpec(SizeMode.Fixed(CONTENT_WIDTH), SizeMode.Fixed(CONTENT_HEIGHT))), FadeNode {
+    private class HomeContentNode(
+        private val onConfigApplied: () -> Unit,
+    ) : BaseUiNode(LayoutSpec(SizeMode.Fixed(CONTENT_WIDTH), SizeMode.Fixed(CONTENT_HEIGHT))), FadeNode {
         override var alpha: Float = 1.0f
 
         private enum class FocusedField {
@@ -2067,9 +2158,8 @@ object HypnosiaMainLayout {
         private var friendInput = ""
         private var configInput = ""
         private val friends = loadFriends().toMutableList()
-        private val configs = loadConfigNames().toMutableList()
-        private var selectedConfig: String = loadSelectedConfig()
-            set(value) { field = value; saveSelectedConfig(value) }
+        private val configs = HypnosiaConfigProfiles.listNames().toMutableList()
+        private var selectedConfig: String = HypnosiaConfigProfiles.selectedName()
         private var renamingConfig: String? = null
         private var renameInput: String = ""
         private val friendScroll = SpringFloat(0.0f, stiffness = 320.0f, damping = 38.0f)
@@ -2177,24 +2267,31 @@ object HypnosiaMainLayout {
                     val y = rowY(panelY, index, offset)
                     if (contains(mouseX, mouseY, configPanelX + 14.0f, y, 230.0f, 24.0f)) {
                         if (renamingConfig != null && renamingConfig != config) cancelRename()
-                        selectedConfig = config
+                        selectConfig(config)
                         focusedField = null
                         return true
                     }
                     if (contains(mouseX, mouseY, configPanelX + 270.0f, y - 1.0f, 24.0f, 24.0f)) {
-                        selectedConfig = config
+                        if (config == HypnosiaConfigProfiles.DEFAULT_NAME) {
+                            focusedField = null
+                            return true
+                        }
+                        selectConfig(config)
                         renamingConfig = config
                         renameInput = config
                         focusedField = FocusedField.ConfigRename
                         return true
                     }
                     if (contains(mouseX, mouseY, configPanelX + 294.0f, y - 1.0f, 24.0f, 24.0f)) {
-                        if (renamingConfig == config) cancelRename()
-                        configs.remove(config)
-                        deleteLocalConfig(config)
-                        if (selectedConfig == config) {
-                            selectedConfig = configs.firstOrNull().orEmpty()
+                        if (config == HypnosiaConfigProfiles.DEFAULT_NAME) {
+                            focusedField = null
+                            return true
                         }
+                        if (renamingConfig == config) cancelRename()
+                        HypnosiaConfigProfiles.delete(config)
+                        refreshConfigNames()
+                        selectedConfig = HypnosiaConfigProfiles.selectedName()
+                        onConfigApplied()
                         focusedField = null
                         return true
                     }
@@ -2326,6 +2423,7 @@ object HypnosiaMainLayout {
             alpha: Float,
             showVisibilityIcon: Boolean,
             isRenaming: Boolean,
+            deletable: Boolean,
         ) {
             if (isRenaming) {
                 val cursor = if ((System.nanoTime() / 500_000_000L) % 2L == 0L) "_" else ""
@@ -2357,11 +2455,15 @@ object HypnosiaMainLayout {
             drawField(context, x, y, width, 24.0f, label, alpha)
             if (showVisibilityIcon) {
                 drawActionIcon(context, "show_file.png", x + 229.0f, y - 1.0f, alpha)
-                drawActionIcon(context, "file_edit.png", x + 256.0f, y - 1.0f, alpha)
-                drawActionIcon(context, "interface_trash_empty.png", x + 280.0f, y - 1.0f, alpha)
+                if (deletable) {
+                    drawActionIcon(context, "file_edit.png", x + 256.0f, y - 1.0f, alpha)
+                    drawActionIcon(context, "interface_trash_empty.png", x + 280.0f, y - 1.0f, alpha)
+                }
             } else {
-                drawActionIcon(context, "file_edit.png", x + 257.0f, y - 1.0f, alpha)
-                drawActionIcon(context, "interface_trash_empty.png", x + 281.0f, y - 1.0f, alpha)
+                if (deletable) {
+                    drawActionIcon(context, "file_edit.png", x + 257.0f, y - 1.0f, alpha)
+                    drawActionIcon(context, "interface_trash_empty.png", x + 281.0f, y - 1.0f, alpha)
+                }
             }
         }
 
@@ -2402,6 +2504,7 @@ object HypnosiaMainLayout {
                             alpha = alpha,
                             showVisibilityIcon = label == selectedConfig,
                             isRenaming = label == renamingConfig,
+                            deletable = label != HypnosiaConfigProfiles.DEFAULT_NAME,
                         )
                     }
                 }
@@ -2458,11 +2561,9 @@ object HypnosiaMainLayout {
 
         private fun addConfigFromInput() {
             val name = safeConfigName(configInput).takeIf { it.isNotBlank() } ?: return
-            ensureLocalConfig(name)
-            if (configs.none { it.equals(name, ignoreCase = true) }) {
-                configs += name
-            }
-            selectedConfig = name
+            HypnosiaConfigProfiles.create(name, copyCurrent = true)
+            refreshConfigNames()
+            selectConfig(name)
             scrollToEnd(configScroll, visibleConfigs())
             configInput = ""
         }
@@ -2472,10 +2573,9 @@ object HypnosiaMainLayout {
             val newName = safeConfigName(renameInput).takeIf { it.isNotBlank() } ?: return
             if (!newName.equals(oldName, ignoreCase = true)) {
                 if (configs.any { it.equals(newName, ignoreCase = true) }) return
-                renameLocalConfig(oldName, newName)
-                val idx = configs.indexOfFirst { it.equals(oldName, ignoreCase = true) }
-                if (idx >= 0) configs[idx] = newName
-                if (selectedConfig.equals(oldName, ignoreCase = true)) selectedConfig = newName
+                HypnosiaConfigProfiles.rename(oldName, newName)
+                refreshConfigNames()
+                selectedConfig = HypnosiaConfigProfiles.selectedName()
             }
             renamingConfig = null
             renameInput = ""
@@ -2488,18 +2588,23 @@ object HypnosiaMainLayout {
             if (focusedField == FocusedField.ConfigRename) focusedField = null
         }
 
-        private fun renameLocalConfig(oldName: String, newName: String) {
-            runCatching {
-                val oldFile = HypnosiaPaths.configsDir.resolve("${safeConfigName(oldName)}.json")
-                val newFile = HypnosiaPaths.configsDir.resolve("${safeConfigName(newName)}.json")
-                if (Files.exists(oldFile) && !Files.exists(newFile)) {
-                    Files.move(oldFile, newFile)
-                }
+        private fun configLabel(config: String): String {
+            return if (config == selectedConfig) "$config (Active)" else config
+        }
+
+        private fun refreshConfigNames() {
+            configs.clear()
+            configs += HypnosiaConfigProfiles.listNames()
+            if (configs.none { it.equals(selectedConfig, ignoreCase = true) }) {
+                selectedConfig = HypnosiaConfigProfiles.selectedName()
             }
         }
 
-        private fun configLabel(config: String): String {
-            return if (config == selectedConfig) "$config (Active)" else config
+        private fun selectConfig(name: String) {
+            if (!HypnosiaConfigProfiles.select(name)) return
+            selectedConfig = HypnosiaConfigProfiles.selectedName()
+            refreshConfigNames()
+            onConfigApplied()
         }
 
         private fun fitInputText(value: String, maxWidth: Float): String {
@@ -2571,26 +2676,19 @@ object HypnosiaMainLayout {
             val file = HypnosiaPaths.rootFile("friends.txt")
             runCatching {
                 Files.write(file, friends, StandardCharsets.UTF_8)
+                FriendsManager.reload()
             }
         }
 
         private fun loadSelectedConfig(): String {
             return runCatching {
-                val file = HypnosiaPaths.rootFile("ui-state.properties")
-                if (!Files.exists(file)) return@runCatching "Default"
-                val props = Properties()
-                Files.newInputStream(file).use(props::load)
-                props.getProperty("selected.config", "Default").takeIf { it.isNotBlank() } ?: "Default"
+                HypnosiaClientSettings.string("ui.selected.config", "Default").takeIf { it.isNotBlank() } ?: "Default"
             }.getOrDefault("Default")
         }
 
         private fun saveSelectedConfig(name: String) {
             runCatching {
-                val file = HypnosiaPaths.rootFile("ui-state.properties")
-                val props = Properties()
-                if (Files.exists(file)) Files.newInputStream(file).use(props::load)
-                props["selected.config"] = name
-                Files.newOutputStream(file).use { props.store(it, null) }
+                HypnosiaClientSettings.set("ui.selected.config", name)
             }
         }
 
@@ -2652,18 +2750,37 @@ object HypnosiaMainLayout {
     ) : BaseUiNode(LayoutSpec(SizeMode.Fixed(WIDTH), SizeMode.Fixed(HEIGHT))) {
         private var activeHudSlider: HudSlider? = null
         private var activeTargetSlider: TargetSliderKind? = null
+        private var activeWorldSlider: WorldSliderKind? = null
+        private var activeAspectSlider = false
+        private var streamerReplacementEditing = false
         private var bindingModuleId: String? = null
         private var bindingModuleTitle: String? = null
         private val contentScroll = SpringFloat(0.0f, stiffness = 320.0f, damping = 38.0f)
         private var maxContentScroll = 0.0f
         private var lastModuleId: String? = null
+        private var iconPaletteOpen = false
+        private var fogPaletteOpen = false
+        private var themePaletteTarget: ThemePaletteTarget? = null
+        private var colorPickerTarget: ColorPickerTarget? = null
+        private var colorPickerDrag: ColorPickerDrag? = null
 
         override fun measure(constraints: Constraints): Size = constraints.constrain(Size(WIDTH, HEIGHT))
 
         override fun render(context: DrawContext) {
             val title = module()?.title ?: "Icons"
             syncScrollState()
-            HypnosiaRenderUtils.drawFigmaBox(context, bounds.x, bounds.y, WIDTH, HEIGHT, 10.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(
+                context = context,
+                x = bounds.x,
+                y = bounds.y,
+                width = WIDTH,
+                height = HEIGHT,
+                radius = 10.0f,
+                bgColor = DRAWER_BG,
+                strokeColor = DRAWER_STROKE,
+                strokeThickness = 1.0f,
+                role = ThemeSettings.ThemeRole.DRAWER,
+            )
             drawText(context, "CLIENT SETTINGS", bounds.x + 15.0f, bounds.y + 13.0f, 10.0f, 0xFF8E8E98.toInt())
             drawText(context, title, bounds.x + 15.0f, bounds.y + 31.0f, 18.0f, WHITE)
             module()?.let { current ->
@@ -2689,10 +2806,12 @@ object HypnosiaMainLayout {
             if (maxContentScroll > 0.5f) {
                 renderContentScrollbar(context, offset)
             }
+            renderColorPicker(context)
         }
 
         override fun mouseClicked(mouseX: Float, mouseY: Float, button: Int): Boolean {
             if (button != 0) return false
+            if (colorPickerTarget != null && handleColorPickerClick(mouseX, mouseY)) return true
             module()?.let { current ->
                 if (contains(mouseX, mouseY, bounds.x + 119.0f, bounds.y + 17.0f, 52.0f, 26.0f)) {
                     bindingModuleId = current.id
@@ -2837,6 +2956,146 @@ object HypnosiaMainLayout {
                         return true
                     }
                 }
+            } else if (module()?.id == "client.icons") {
+                val blackHoleRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 212.0f, 40.0f)
+                val colorRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, blackHoleRect.x, blackHoleRect.y, blackHoleRect.width, blackHoleRect.height)) {
+                    IconSettings.toggleBlackHoleVisible()
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, colorRect.x, colorRect.y, colorRect.width, colorRect.height)) {
+                    colorPickerTarget = ColorPickerTarget.ICON
+                    iconPaletteOpen = false
+                    return true
+                }
+                if (iconPaletteOpen) {
+                    iconPaletteSwatches().forEach { (color, rect) ->
+                        if (contains(mouseX, contentMouseY, rect.x, rect.y, rect.width, rect.height)) {
+                            IconSettings.setColor(color)
+                            iconPaletteOpen = false
+                            return true
+                        }
+                    }
+                }
+            } else if (module()?.id == "world.custom_fog") {
+                val distanceRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 48.0f)
+                val strengthRect = Rect(bounds.x + 11.0f, bounds.y + 183.0f, 212.0f, 48.0f)
+                val softnessRect = Rect(bounds.x + 11.0f, bounds.y + 243.0f, 212.0f, 48.0f)
+                val colorRect = Rect(bounds.x + 11.0f, bounds.y + 303.0f, 212.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, distanceRect.x, distanceRect.y, distanceRect.width, distanceRect.height)) {
+                    activeWorldSlider = WorldSliderKind.FOG_DISTANCE
+                    updateWorldSlider(mouseX)
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, strengthRect.x, strengthRect.y, strengthRect.width, strengthRect.height)) {
+                    activeWorldSlider = WorldSliderKind.FOG_STRENGTH
+                    updateWorldSlider(mouseX)
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, softnessRect.x, softnessRect.y, softnessRect.width, softnessRect.height)) {
+                    activeWorldSlider = WorldSliderKind.FOG_SOFTNESS
+                    updateWorldSlider(mouseX)
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, colorRect.x, colorRect.y, colorRect.width, colorRect.height)) {
+                    colorPickerTarget = ColorPickerTarget.FOG
+                    fogPaletteOpen = false
+                    return true
+                }
+                if (fogPaletteOpen) {
+                    fogPaletteSwatches().forEach { (color, rect) ->
+                        if (contains(mouseX, contentMouseY, rect.x, rect.y, rect.width, rect.height)) {
+                            WorldVisualSettings.setFogColor(color)
+                            fogPaletteOpen = false
+                            return true
+                        }
+                    }
+                }
+            } else if (module()?.id == "other.friends") {
+                val displayRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 212.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, displayRect.x, displayRect.y, displayRect.width, displayRect.height)) {
+                    val next = !FriendsManager.isEnabled()
+                    FriendsManager.setEnabled(next)
+                    module()?.enabled = next
+                    return true
+                }
+            } else if (module()?.id == "other.streamer_mode") {
+                val levelRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 212.0f, 40.0f)
+                val nameRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, levelRect.x, levelRect.y, levelRect.width, levelRect.height)) {
+                    StreamerModeSettings.cycleLevel()
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, nameRect.x, nameRect.y, nameRect.width, nameRect.height)) {
+                    streamerReplacementEditing = true
+                    return true
+                }
+            } else if (module()?.id == "visuals.aspect_ratio") {
+                val modeRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 212.0f, 40.0f)
+                val freeRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 48.0f)
+                if (contains(mouseX, contentMouseY, modeRect.x, modeRect.y, modeRect.width, modeRect.height)) {
+                    AspectRatioSettings.cycleMode()
+                    return true
+                }
+                if (contains(mouseX, contentMouseY, freeRect.x, freeRect.y, freeRect.width, freeRect.height)) {
+                    activeAspectSlider = true
+                    updateAspectSlider(mouseX)
+                    return true
+                }
+            } else if (module()?.id == "client.theme") {
+                val modeRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 212.0f, 40.0f)
+                val fontRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 40.0f)
+                val glassRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 212.0f, 40.0f)
+                val gradientRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f, 212.0f, 40.0f)
+                val baseRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f, 212.0f, 40.0f)
+                val startRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f, 212.0f, 40.0f)
+                val endRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f, 212.0f, 40.0f)
+                when {
+                    contains(mouseX, contentMouseY, modeRect.x, modeRect.y, modeRect.width, modeRect.height) -> {
+                        ThemeSettings.cycleMode()
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, fontRect.x, fontRect.y, fontRect.width, fontRect.height) -> {
+                        ThemeSettings.cycleFont()
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, glassRect.x, glassRect.y, glassRect.width, glassRect.height) -> {
+                        ThemeSettings.toggleLiquidGlass()
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, gradientRect.x, gradientRect.y, gradientRect.width, gradientRect.height) -> {
+                        ThemeSettings.toggleGradient()
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, baseRect.x, baseRect.y, baseRect.width, baseRect.height) -> {
+                        colorPickerTarget = ColorPickerTarget.THEME_BASE
+                        themePaletteTarget = null
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, startRect.x, startRect.y, startRect.width, startRect.height) -> {
+                        colorPickerTarget = ColorPickerTarget.THEME_GRADIENT_START
+                        themePaletteTarget = null
+                        return true
+                    }
+                    contains(mouseX, contentMouseY, endRect.x, endRect.y, endRect.width, endRect.height) -> {
+                        colorPickerTarget = ColorPickerTarget.THEME_GRADIENT_END
+                        themePaletteTarget = null
+                        return true
+                    }
+                }
+                themePaletteTarget?.let { target ->
+                    themePaletteSwatches().forEach { (color, rect) ->
+                        if (contains(mouseX, contentMouseY, rect.x, rect.y, rect.width, rect.height)) {
+                            when (target) {
+                                ThemePaletteTarget.BASE -> ThemeSettings.setBaseColor(color)
+                                ThemePaletteTarget.GRADIENT_START -> ThemeSettings.setGradientStart(color)
+                                ThemePaletteTarget.GRADIENT_END -> ThemeSettings.setGradientEnd(color)
+                            }
+                            themePaletteTarget = null
+                            return true
+                        }
+                    }
+                }
             }
             return contains(mouseX, mouseY, bounds.x, bounds.y, WIDTH, HEIGHT)
         }
@@ -2856,6 +3115,10 @@ object HypnosiaMainLayout {
 
         override fun mouseDragged(mouseX: Float, mouseY: Float, button: Int, deltaX: Float, deltaY: Float): Boolean {
             if (button != 0) return false
+            colorPickerDrag?.let {
+                updateColorPickerDrag(mouseX, mouseY, it)
+                return true
+            }
             if (activeHudSlider != null) {
                 updateHudSlider(mouseX)
                 return true
@@ -2864,17 +3127,37 @@ object HypnosiaMainLayout {
                 updateTargetSlider(mouseX)
                 return true
             }
+            if (activeWorldSlider != null) {
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (activeAspectSlider) {
+                updateAspectSlider(mouseX)
+                return true
+            }
             return false
         }
 
         override fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean {
-            val wasDragging = activeHudSlider != null || activeTargetSlider != null
+            val wasDragging = activeHudSlider != null || activeTargetSlider != null || activeWorldSlider != null || activeAspectSlider || colorPickerDrag != null
             activeHudSlider = null
             activeTargetSlider = null
+            activeWorldSlider = null
+            activeAspectSlider = false
+            colorPickerDrag = null
             return wasDragging
         }
 
         override fun keyPressed(keyCode: Int, scanCode: Int, modifiers: Int): Boolean {
+            if (streamerReplacementEditing) {
+                when (keyCode) {
+                    GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> streamerReplacementEditing = false
+                    GLFW.GLFW_KEY_BACKSPACE -> StreamerModeSettings.setReplacement(StreamerModeSettings.replacement().dropLast(1))
+                    GLFW.GLFW_KEY_DELETE -> StreamerModeSettings.setReplacement("")
+                    else -> return false
+                }
+                return true
+            }
             val moduleId = bindingModuleId ?: return false
             val title = bindingModuleTitle ?: module()?.title ?: moduleId
             when (keyCode) {
@@ -2885,6 +3168,12 @@ object HypnosiaMainLayout {
             }
             bindingModuleId = null
             bindingModuleTitle = null
+            return true
+        }
+
+        override fun charTyped(chr: Char, modifiers: Int): Boolean {
+            if (!streamerReplacementEditing || chr.isISOControl()) return false
+            StreamerModeSettings.setReplacement((StreamerModeSettings.replacement() + chr).take(32))
             return true
         }
 
@@ -2930,6 +3219,18 @@ object HypnosiaMainLayout {
                 renderHudModuleSettings(context, HudModuleSettings.Module.ARMOR)
             } else if (currentModule?.id == "hud.target") {
                 renderTargetHudSettings(context)
+            } else if (currentModule?.id == "client.icons") {
+                renderIconSettings(context)
+            } else if (currentModule?.id == "world.custom_fog") {
+                renderCustomFogSettings(context)
+            } else if (currentModule?.id == "other.friends") {
+                renderFriendsSettings(context)
+            } else if (currentModule?.id == "other.streamer_mode") {
+                renderStreamerModeSettings(context)
+            } else if (currentModule?.id == "visuals.aspect_ratio") {
+                renderAspectRatioSettings(context)
+            } else if (currentModule?.id == "client.theme") {
+                renderThemeSettings(context)
             } else if (currentModule?.id in hudModuleIds) {
                 hudModuleForId(currentModule?.id)?.let { renderExtraHudModuleSettings(context, it) }
             } else {
@@ -2937,8 +3238,256 @@ object HypnosiaMainLayout {
                 drawSliderRow(context, bounds.x + 11.0f, bounds.y + 127.0f, "Water Icons", "Hide")
                 drawSliderRow(context, bounds.x + 11.0f, bounds.y + 187.0f, "Black-Hole", "Keep")
                 drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 249.0f, "Icon Color", 9.0f, "#F2F2F2", 115.0f, 0xFFBFC0CA.toInt())
-                HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 198.0f, bounds.y + 261.0f, 14.0f, 14.0f, 7.0f, 0xFFF2F2F2.toInt())
+                HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 11.0f + COLOR_SWATCH_X, bounds.y + 261.0f, 14.0f, 14.0f, 7.0f, 0xFFF2F2F2.toInt())
             }
+        }
+
+        private fun renderIconSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Black-Hole",
+                labelOffX = 9.0f,
+                value = if (IconSettings.blackHoleVisible) "Show" else "Hide",
+                valueOffX = 156.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 123.0f,
+                label = "Icon Color",
+                labelOffX = 9.0f,
+                value = IconSettings.colorHex(),
+                valueOffX = 115.0f,
+                valueColor = 0xFFBFC0CA.toInt(),
+            )
+            HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 11.0f + COLOR_SWATCH_X, bounds.y + 136.0f, 14.0f, 14.0f, 7.0f, IconSettings.color)
+
+            if (!iconPaletteOpen) return
+            HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 171.0f, 212.0f, 98.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
+            drawText(context, "Palette", bounds.x + 21.0f, bounds.y + 181.0f, 12.0f, 0xFFE7E7EA.toInt())
+            iconPaletteSwatches().forEach { (color, rect) ->
+                val selected = (IconSettings.color and 0x00FFFFFF) == (color and 0x00FFFFFF)
+                HypnosiaRenderUtils.drawFigmaBox(
+                    context = context,
+                    x = rect.x,
+                    y = rect.y,
+                    width = rect.width,
+                    height = rect.height,
+                    radius = 7.0f,
+                    bgColor = color,
+                    strokeColor = if (selected) WHITE else DRAWER_STROKE,
+                    strokeThickness = if (selected) 2.0f else 1.0f,
+                )
+            }
+        }
+
+        private fun renderThemeSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Theme",
+                labelOffX = 9.0f,
+                value = ThemeSettings.mode().label,
+                valueOffX = 138.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 123.0f,
+                label = "Font",
+                labelOffX = 9.0f,
+                value = ThemeSettings.fontMode().label,
+                valueOffX = 132.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 171.0f,
+                label = "Liquid Glass",
+                labelOffX = 9.0f,
+                value = if (ThemeSettings.glassActive()) "On" else "Off",
+                valueOffX = 164.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 219.0f,
+                label = "Gradient",
+                labelOffX = 9.0f,
+                value = if (ThemeSettings.gradient()) "On" else "Off",
+                valueOffX = 164.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawThemeColorRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Base Color", ThemeSettings.baseColor())
+            drawThemeColorRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Gradient A", ThemeSettings.gradientStart())
+            drawThemeColorRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Gradient B", ThemeSettings.gradientEnd())
+
+            drawText(context, "Custom font file:", bounds.x + 21.0f, bounds.y + 414.0f, 10.0f, 0xFF8E8E98.toInt())
+            drawText(context, ThemeSettings.customFontPathHint(), bounds.x + 21.0f, bounds.y + 430.0f, 10.0f, 0xFFBFC0CA.toInt())
+
+            val target = themePaletteTarget ?: return
+            HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 455.0f, 212.0f, 98.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
+            drawText(context, "Palette: ${target.label}", bounds.x + 21.0f, bounds.y + 465.0f, 12.0f, 0xFFE7E7EA.toInt())
+            val currentColor = when (target) {
+                ThemePaletteTarget.BASE -> ThemeSettings.baseColor()
+                ThemePaletteTarget.GRADIENT_START -> ThemeSettings.gradientStart()
+                ThemePaletteTarget.GRADIENT_END -> ThemeSettings.gradientEnd()
+            }
+            themePaletteSwatches().forEach { (color, rect) ->
+                val selected = (currentColor and 0x00FFFFFF) == (color and 0x00FFFFFF)
+                HypnosiaRenderUtils.drawFigmaBox(
+                    context = context,
+                    x = rect.x,
+                    y = rect.y,
+                    width = rect.width,
+                    height = rect.height,
+                    radius = 7.0f,
+                    bgColor = color,
+                    strokeColor = if (selected) WHITE else DRAWER_STROKE,
+                    strokeThickness = if (selected) 2.0f else 1.0f,
+                )
+            }
+        }
+
+        private fun drawThemeColorRow(context: DrawContext, x: Float, y: Float, label: String, color: Int) {
+            drawSimpleRow(
+                context = context,
+                x = x,
+                y = y,
+                label = label,
+                labelOffX = 9.0f,
+                value = ThemeSettings.colorHex(color),
+                valueOffX = 112.0f,
+                valueColor = 0xFFBFC0CA.toInt(),
+            )
+            HypnosiaRenderUtils.drawFigmaBox(context, x + COLOR_SWATCH_X - 16.0f, y + 13.0f, 14.0f, 14.0f, 7.0f, color)
+        }
+
+        private fun drawWorldColorRow(context: DrawContext, x: Float, y: Float, label: String, color: Int) {
+            drawSimpleRow(
+                context = context,
+                x = x,
+                y = y,
+                label = label,
+                labelOffX = 9.0f,
+                value = WorldVisualSettings.colorHex(color),
+                valueOffX = 112.0f,
+                valueColor = 0xFFBFC0CA.toInt(),
+            )
+            HypnosiaRenderUtils.drawFigmaBox(context, x + COLOR_SWATCH_X, y + 13.0f, 14.0f, 14.0f, 7.0f, color)
+        }
+
+        private fun renderColorPicker(context: DrawContext) {
+            val target = colorPickerTarget ?: return
+            val x = colorPickerX()
+            val y = colorPickerY()
+            val color = colorForTarget(target)
+            val hsv = hsvFor(color)
+            val alpha = ((color ushr 24) and 0xFF) / 255.0f
+
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT, 10.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.DRAWER)
+            drawButton(context, x + 8.0f, y + 8.0f, 66.0f, 32.0f, "Close")
+
+            colorPickerSwatches().forEach { (swatch, rect) ->
+                val selected = (color and 0x00FFFFFF) == (swatch and 0x00FFFFFF)
+                HypnosiaRenderUtils.drawFigmaBox(
+                    context = context,
+                    x = rect.x,
+                    y = rect.y,
+                    width = rect.width,
+                    height = rect.height,
+                    radius = 4.0f,
+                    bgColor = swatch,
+                    strokeColor = if (selected) WHITE else 0x00000000,
+                    strokeThickness = if (selected) 2.0f else 0.0f,
+                )
+            }
+
+            val canvas = pickerCanvasRect()
+            HypnosiaRenderUtils.drawThemedBox(context, canvas.x - 10.0f, canvas.y - 10.0f, canvas.width + 20.0f, canvas.height + 20.0f, 10.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
+            HypnosiaRenderUtils.drawHsvColorCanvas(context, canvas.x, canvas.y, canvas.width, canvas.height, 8.0f, hsv[0] * 360.0f)
+            val markerX = canvas.x + hsv[1] * canvas.width
+            val markerY = canvas.y + (1.0f - hsv[2]) * canvas.height
+            HypnosiaRenderUtils.drawFigmaBox(context, markerX - 7.0f, markerY - 7.0f, 14.0f, 14.0f, 7.0f, 0x33000000, 0x66000000, 1.0f)
+            HypnosiaRenderUtils.drawFigmaBox(context, markerX - 6.0f, markerY - 6.0f, 14.0f, 14.0f, 7.0f, 0x00000000, WHITE, 2.0f)
+
+            val hue = pickerHueRect()
+            HypnosiaRenderUtils.drawHueStrip(context, hue.x, hue.y, hue.width, hue.height, 5.0f)
+            HypnosiaRenderUtils.drawFigmaBox(context, hue.x - 2.0f, hue.y + hsv[0] * hue.height - 6.0f, 12.0f, 12.0f, 6.0f, WHITE)
+
+            val opacity = pickerOpacityRect()
+            HypnosiaRenderUtils.drawAlphaStrip(context, opacity.x, opacity.y, opacity.width, opacity.height, 5.0f, color)
+            HypnosiaRenderUtils.drawFigmaBox(context, opacity.x - 2.0f, opacity.y + alpha * opacity.height - 6.0f, 12.0f, 12.0f, 6.0f, WHITE)
+
+            val valueY = y + 318.0f
+            HypnosiaRenderUtils.drawThemedBox(context, x + 8.0f, valueY, 54.0f, 34.0f, 7.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.BUTTON)
+            drawText(context, "HEX", x + 22.0f, valueY + 10.0f, 12.0f, 0xFFE7E7EA.toInt())
+            HypnosiaRenderUtils.drawThemedBox(context, x + 69.0f, valueY, 137.0f, 34.0f, 7.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.INPUT)
+            drawText(context, hexWithAlpha(color), x + 83.0f, valueY + 10.0f, 12.0f, 0xFFBFC0CA.toInt())
+            HypnosiaRenderUtils.drawThemedBox(context, x + 214.0f, valueY, 74.0f, 34.0f, 7.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.INPUT)
+            drawText(context, "${(alpha * 100.0f).toInt()}%", x + 232.0f, valueY + 10.0f, 12.0f, 0xFFE7E7EA.toInt())
+        }
+
+        private fun handleColorPickerClick(mouseX: Float, mouseY: Float): Boolean {
+            val target = colorPickerTarget ?: return false
+            val picker = Rect(colorPickerX(), colorPickerY(), COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT)
+            if (!contains(mouseX, mouseY, picker.x, picker.y, picker.width, picker.height)) return false
+            if (contains(mouseX, mouseY, picker.x + 10.0f, picker.y + 10.0f, 64.0f, 30.0f)) {
+                colorPickerTarget = null
+                colorPickerDrag = null
+                return true
+            }
+            colorPickerSwatches().forEach { (color, rect) ->
+                if (contains(mouseX, mouseY, rect.x, rect.y, rect.width, rect.height)) {
+                    val alpha = (colorForTarget(target) ushr 24) and 0xFF
+                    setColorForTarget(target, (color and 0x00FFFFFF) or (alpha shl 24))
+                    return true
+                }
+            }
+            val drag = when {
+                contains(mouseX, mouseY, pickerCanvasRect().x, pickerCanvasRect().y, pickerCanvasRect().width, pickerCanvasRect().height) -> ColorPickerDrag.CANVAS
+                contains(mouseX, mouseY, pickerHueRect().x - 5.0f, pickerHueRect().y, pickerHueRect().width + 10.0f, pickerHueRect().height) -> ColorPickerDrag.HUE
+                contains(mouseX, mouseY, pickerOpacityRect().x - 5.0f, pickerOpacityRect().y, pickerOpacityRect().width + 10.0f, pickerOpacityRect().height) -> ColorPickerDrag.OPACITY
+                else -> null
+            }
+            if (drag != null) {
+                colorPickerDrag = drag
+                updateColorPickerDrag(mouseX, mouseY, drag)
+            }
+            return true
+        }
+
+        private fun updateColorPickerDrag(mouseX: Float, mouseY: Float, drag: ColorPickerDrag) {
+            val target = colorPickerTarget ?: return
+            val current = colorForTarget(target)
+            val hsv = hsvFor(current)
+            val alpha = ((current ushr 24) and 0xFF) / 255.0f
+            val next = when (drag) {
+                ColorPickerDrag.CANVAS -> {
+                    val rect = pickerCanvasRect()
+                    val sat = ((mouseX - rect.x) / rect.width).coerceIn(0.0f, 1.0f)
+                    val value = (1.0f - (mouseY - rect.y) / rect.height).coerceIn(0.0f, 1.0f)
+                    colorFromHsv(hsv[0], sat, value, alpha)
+                }
+                ColorPickerDrag.HUE -> {
+                    val rect = pickerHueRect()
+                    val hue = ((mouseY - rect.y) / rect.height).coerceIn(0.0f, 1.0f)
+                    colorFromHsv(hue, hsv[1], hsv[2], alpha)
+                }
+                ColorPickerDrag.OPACITY -> {
+                    val rect = pickerOpacityRect()
+                    val nextAlpha = ((mouseY - rect.y) / rect.height).coerceIn(0.0f, 1.0f)
+                    colorFromHsv(hsv[0], hsv[1], hsv[2], nextAlpha)
+                }
+            }
+            setColorForTarget(target, next)
         }
 
         private fun syncScrollState() {
@@ -2946,6 +3495,14 @@ object HypnosiaMainLayout {
             if (moduleId != lastModuleId) {
                 contentScroll.snap(0.0f)
                 contentScroll.target = 0.0f
+                activeWorldSlider = null
+                activeAspectSlider = false
+                streamerReplacementEditing = false
+                iconPaletteOpen = false
+                fogPaletteOpen = false
+                themePaletteTarget = null
+                colorPickerTarget = null
+                colorPickerDrag = null
                 lastModuleId = moduleId
             }
             maxContentScroll = (contentBottomY() - (HEIGHT - CONTENT_BOTTOM_PAD)).coerceAtLeast(0.0f)
@@ -2960,6 +3517,12 @@ object HypnosiaMainLayout {
                 "hud.player_info" -> 355.0f
                 "hud.inventory" -> 223.0f
                 "hud.cooldowns", "hud.potions", "hud.hotkeys" -> 223.0f
+                "client.icons" -> if (iconPaletteOpen) 269.0f else 163.0f
+                "world.custom_fog" -> if (fogPaletteOpen) 475.0f else 366.0f
+                "client.theme" -> if (themePaletteTarget != null) 553.0f else 445.0f
+                "other.friends" -> 195.0f
+                "other.streamer_mode" -> 235.0f
+                "visuals.aspect_ratio" -> 231.0f
                 else -> 289.0f
             }
         }
@@ -3026,7 +3589,7 @@ object HypnosiaMainLayout {
                 valueColor = 0xFFFF2F86.toInt(),
             )
             if (hudModule == HudModuleSettings.Module.PLAYER_INFO) {
-                HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 104.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+                HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 123.0f, 212.0f, 104.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
                 drawText(context, "Parts", bounds.x + 21.0f, bounds.y + 132.0f, 12.0f, 0xFFE7E7EA.toInt())
                 drawPlayerInfoToggleChip(context, "BPS", state.playerInfoBps, bounds.x + 20.0f, bounds.y + 160.0f)
                 drawPlayerInfoToggleChip(context, "TPS", state.playerInfoTps, bounds.x + 124.0f, bounds.y + 160.0f)
@@ -3061,11 +3624,11 @@ object HypnosiaMainLayout {
                 drawHudSliderRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Model yaw", TargetHudSettings.yawToSlider(state.modelYaw))
                 drawHudSliderRow(context, bounds.x + 11.0f, bounds.y + 423.0f, "Model pitch", TargetHudSettings.pitchToSlider(state.modelPitch))
                 drawHudSliderRow(context, bounds.x + 11.0f, bounds.y + 483.0f, "Model scale", TargetHudSettings.scaleToSlider(state.modelScale))
-                HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 11.0f, bounds.y + 543.0f, 212.0f, 62.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+                HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 543.0f, 212.0f, 62.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
                 drawText(context, "Options", bounds.x + 21.0f, bounds.y + 552.0f, 12.0f, 0xFFE7E7EA.toInt())
                 drawTargetToggleChip(context, "Hand + Armor Strip", state.showEquipmentStrip, bounds.x + 20.0f, bounds.y + 578.0f, 196.0f)
             } else {
-                HypnosiaRenderUtils.drawFigmaBox(context, bounds.x + 11.0f, bounds.y + 243.0f, 212.0f, 62.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+                HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 243.0f, 212.0f, 62.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
                 drawText(context, "Options", bounds.x + 21.0f, bounds.y + 252.0f, 12.0f, 0xFFE7E7EA.toInt())
                 drawTargetToggleChip(context, "Hand + Armor Strip", state.showEquipmentStrip, bounds.x + 20.0f, bounds.y + 278.0f, 196.0f)
             }
@@ -3098,8 +3661,164 @@ object HypnosiaMainLayout {
             }
         }
 
+        private fun updateWorldSlider(mouseX: Float) {
+            val slider = activeWorldSlider ?: return
+            val trackX = bounds.x + 93.0f
+            val trackW = 112.0f
+            val value = ((mouseX - trackX) / trackW).coerceIn(0.0f, 1.0f)
+            when (slider) {
+                WorldSliderKind.FOG_DISTANCE -> WorldVisualSettings.setFogDistanceFromSlider(value)
+                WorldSliderKind.FOG_STRENGTH -> WorldVisualSettings.setFogStrengthFromSlider(value)
+                WorldSliderKind.FOG_SOFTNESS -> WorldVisualSettings.setFogSoftnessFromSlider(value)
+            }
+        }
+
+        private fun updateAspectSlider(mouseX: Float) {
+            val trackX = bounds.x + 93.0f
+            val trackW = 112.0f
+            AspectRatioSettings.setFreeFromSlider(((mouseX - trackX) / trackW).coerceIn(0.0f, 1.0f))
+        }
+
+        private fun renderFullbrightSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Gamma",
+                labelOffX = 9.0f,
+                value = if (WorldVisualSettings.fullbrightEnabled()) "16.0" else "Vanilla",
+                valueOffX = 142.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawGroupCard(context, bounds.x + 11.0f, bounds.y + 127.0f, "Fullbright")
+            drawText(context, "Boosts client gamma while enabled.", bounds.x + 21.0f, bounds.y + 161.0f, 12.0f, 0xFFE7E7EA.toInt())
+            drawText(context, "Previous gamma is restored on disable.", bounds.x + 21.0f, bounds.y + 187.0f, 12.0f, 0xFF8E8E98.toInt())
+        }
+
+        private fun renderCustomFogSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Mode",
+                labelOffX = 9.0f,
+                value = if (WorldVisualSettings.customFogEnabled()) "Custom" else "Vanilla",
+                valueOffX = 138.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawValueSliderRow(
+                context,
+                bounds.x + 11.0f,
+                bounds.y + 123.0f,
+                "Distance",
+                "${WorldVisualSettings.fogDistance().toInt()}m",
+                WorldVisualSettings.fogDistanceSlider(),
+            )
+            drawValueSliderRow(
+                context,
+                bounds.x + 11.0f,
+                bounds.y + 183.0f,
+                "Strength",
+                "${(WorldVisualSettings.fogStrength() * 100.0f).toInt()}%",
+                WorldVisualSettings.fogStrengthSlider(),
+            )
+            drawValueSliderRow(
+                context,
+                bounds.x + 11.0f,
+                bounds.y + 243.0f,
+                "Soft Fog",
+                "${(WorldVisualSettings.fogSoftness() * 100.0f).toInt()}%",
+                WorldVisualSettings.fogSoftnessSlider(),
+            )
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 303.0f, "Fog Color", WorldVisualSettings.fogColor())
+            drawText(context, "Water and lava fog stay vanilla.", bounds.x + 21.0f, bounds.y + 356.0f, 10.0f, 0xFF8E8E98.toInt())
+            if (!fogPaletteOpen) return
+            HypnosiaRenderUtils.drawThemedBox(context, bounds.x + 11.0f, bounds.y + 377.0f, 212.0f, 98.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
+            drawText(context, "Fog Palette", bounds.x + 21.0f, bounds.y + 387.0f, 12.0f, 0xFFE7E7EA.toInt())
+            fogPaletteSwatches().forEach { (color, rect) ->
+                val selected = (WorldVisualSettings.fogColor() and 0x00FFFFFF) == (color and 0x00FFFFFF)
+                HypnosiaRenderUtils.drawFigmaBox(
+                    context = context,
+                    x = rect.x,
+                    y = rect.y,
+                    width = rect.width,
+                    height = rect.height,
+                    radius = 7.0f,
+                    bgColor = color,
+                    strokeColor = if (selected) WHITE else DRAWER_STROKE,
+                    strokeThickness = if (selected) 2.0f else 1.0f,
+                )
+            }
+        }
+
+        private fun renderFriendsSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Tab Display",
+                labelOffX = 9.0f,
+                value = if (FriendsManager.isEnabled()) "On" else "Off",
+                valueOffX = 164.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawGroupCard(context, bounds.x + 11.0f, bounds.y + 127.0f, "Friends")
+            drawText(context, "Shows friends in the player tab list.", bounds.x + 21.0f, bounds.y + 161.0f, 12.0f, 0xFFE7E7EA.toInt())
+            drawText(context, "Use Bind above for quick toggle.", bounds.x + 21.0f, bounds.y + 187.0f, 12.0f, 0xFF8E8E98.toInt())
+        }
+
+        private fun renderStreamerModeSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Mode",
+                labelOffX = 9.0f,
+                value = StreamerModeSettings.level().label,
+                valueOffX = 136.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 123.0f,
+                label = "Replace With",
+                labelOffX = 9.0f,
+                value = if (streamerReplacementEditing) StreamerModeSettings.replacement() + "_" else StreamerModeSettings.replacement(),
+                valueOffX = 104.0f,
+                valueColor = 0xFFBFC0CA.toInt(),
+            )
+            drawGroupCard(context, bounds.x + 11.0f, bounds.y + 175.0f, "Streamer Mode")
+            drawText(context, "Level 1 hides only your nickname.", bounds.x + 21.0f, bounds.y + 209.0f, 12.0f, 0xFFE7E7EA.toInt())
+            drawText(context, "Level 2 replaces all player names.", bounds.x + 21.0f, bounds.y + 225.0f, 12.0f, 0xFF8E8E98.toInt())
+        }
+
+        private fun renderAspectRatioSettings(context: DrawContext) {
+            drawSimpleRow(
+                context = context,
+                x = bounds.x + 11.0f,
+                y = bounds.y + 75.0f,
+                label = "Mode",
+                labelOffX = 9.0f,
+                value = AspectRatioSettings.mode().label,
+                valueOffX = 150.0f,
+                valueColor = 0xFFFF2F86.toInt(),
+            )
+            drawValueSliderRow(
+                context,
+                bounds.x + 11.0f,
+                bounds.y + 123.0f,
+                "Free Ratio",
+                String.format(Locale.US, "%.2f", AspectRatioSettings.freeValue()),
+                AspectRatioSettings.freeSlider(),
+            )
+            drawGroupCard(context, bounds.x + 11.0f, bounds.y + 183.0f, "Aspect Ratio")
+            drawText(context, "Changes camera projection aspect.", bounds.x + 21.0f, bounds.y + 217.0f, 12.0f, 0xFFE7E7EA.toInt())
+            drawText(context, "Use Free for custom stretch.", bounds.x + 21.0f, bounds.y + 233.0f, 12.0f, 0xFF8E8E98.toInt())
+        }
+
         private fun drawGroupCard(context: DrawContext, x: Float, y: Float, title: String) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 212.0f, 96.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 212.0f, 96.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.CARD)
             drawText(context, title, x + 10.0f, y + 9.0f, 12.0f, 0xFFE7E7EA.toInt())
         }
 
@@ -3220,8 +3939,146 @@ object HypnosiaMainLayout {
             )
         }
 
+        private fun iconPaletteSwatches(): List<Pair<Int, Rect>> {
+            val colors = listOf(
+                0xFFFFFFFF.toInt(),
+                0xFF8E8E8E.toInt(),
+                0xFFFF2F86.toInt(),
+                0xFF68E673.toInt(),
+                0xFF63D7FF.toInt(),
+                0xFFE8DEFD.toInt(),
+                0xFFFFD84D.toInt(),
+                0xFFFF6B4A.toInt(),
+                0xFF9D7CFF.toInt(),
+                0xFF0D0D0D.toInt(),
+            )
+            return colors.mapIndexed { index, color ->
+                val col = index % 5
+                val row = index / 5
+                color to Rect(bounds.x + 21.0f + col * 38.0f, bounds.y + 209.0f + row * 28.0f, 24.0f, 24.0f)
+            }
+        }
+
+        private fun fogPaletteSwatches(): List<Pair<Int, Rect>> {
+            val colors = listOf(
+                0xFFC9D7E8.toInt(),
+                0xFFFFFFFF.toInt(),
+                0xFFBFC0CA.toInt(),
+                0xFF9BBEFF.toInt(),
+                0xFFFFD7A3.toInt(),
+                0xFFB8D7C3.toInt(),
+                0xFF6F7F8A.toInt(),
+                0xFF2F3138.toInt(),
+                0xFFFFC1D9.toInt(),
+                0xFFD8B4FE.toInt(),
+            )
+            return colors.mapIndexed { index, color ->
+                val col = index % 5
+                val row = index / 5
+                color to Rect(bounds.x + 21.0f + col * 38.0f, bounds.y + 415.0f + row * 28.0f, 24.0f, 24.0f)
+            }
+        }
+
+        private fun themePaletteSwatches(): List<Pair<Int, Rect>> {
+            val colors = listOf(
+                0xFF0D0D0D.toInt(),
+                0xFFFFFFFF.toInt(),
+                0xFFBFC0CA.toInt(),
+                0xFFFF2F86.toInt(),
+                0xFF63D7FF.toInt(),
+                0xFF68E673.toInt(),
+                0xFFE8DEFD.toInt(),
+                0xFF9D7CFF.toInt(),
+                0xFFFFD84D.toInt(),
+                0xFFFF6B4A.toInt(),
+            )
+            return colors.mapIndexed { index, color ->
+                val col = index % 5
+                val row = index / 5
+                color to Rect(bounds.x + 21.0f + col * 38.0f, bounds.y + 493.0f + row * 28.0f, 24.0f, 24.0f)
+            }
+        }
+
+        private fun colorPickerSwatches(): List<Pair<Int, Rect>> {
+            val colors = listOf(
+                0xFFBFC0CA.toInt(),
+                0xFFFF2F86.toInt(),
+                0xFFFF6B4A.toInt(),
+                0xFFFFA63D.toInt(),
+                0xFFFFD84D.toInt(),
+                0xFF68E673.toInt(),
+                0xFF3FE08B.toInt(),
+                0xFF52E09A.toInt(),
+                0xFF49E184.toInt(),
+                0xFF4FE492.toInt(),
+                0xFF4BE68C.toInt(),
+                0xFF38D6C8.toInt(),
+                0xFF5797FF.toInt(),
+                0xFF6D8CFF.toInt(),
+                0xFF9D7CFF.toInt(),
+                0xFF8E98A6.toInt(),
+                0xFFB3356E.toInt(),
+                0xFF57D586.toInt(),
+                0xFF41D57C.toInt(),
+                0xFF4EDB8B.toInt(),
+                0xFF58E596.toInt(),
+                0xFF58E596.toInt(),
+            )
+            return colors.mapIndexed { index, color ->
+                val col = index % 11
+                val row = index / 11
+                color to Rect(colorPickerX() + 18.0f + col * 26.0f, colorPickerY() + 438.0f + row * 24.0f, 18.0f, 18.0f)
+            }
+        }
+
+        private fun colorForTarget(target: ColorPickerTarget): Int =
+            when (target) {
+                ColorPickerTarget.ICON -> IconSettings.color
+                ColorPickerTarget.FOG -> WorldVisualSettings.fogColor()
+                ColorPickerTarget.THEME_BASE -> ThemeSettings.baseColor()
+                ColorPickerTarget.THEME_GRADIENT_START -> ThemeSettings.gradientStart()
+                ColorPickerTarget.THEME_GRADIENT_END -> ThemeSettings.gradientEnd()
+            }
+
+        private fun setColorForTarget(target: ColorPickerTarget, color: Int) {
+            when (target) {
+                ColorPickerTarget.ICON -> IconSettings.setColor(color)
+                ColorPickerTarget.FOG -> WorldVisualSettings.setFogColor(color)
+                ColorPickerTarget.THEME_BASE -> ThemeSettings.setBaseColor(color)
+                ColorPickerTarget.THEME_GRADIENT_START -> ThemeSettings.setGradientStart(color)
+                ColorPickerTarget.THEME_GRADIENT_END -> ThemeSettings.setGradientEnd(color)
+            }
+        }
+
+        private fun pickerCanvasRect(): Rect = Rect(colorPickerX() + 28.0f, colorPickerY() + 100.0f, 284.0f, 134.0f)
+
+        private fun pickerHueRect(): Rect = Rect(colorPickerX() + 18.0f, colorPickerY() + 282.0f, 296.0f, 10.0f)
+
+        private fun pickerOpacityRect(): Rect = Rect(colorPickerX() + 18.0f, colorPickerY() + 332.0f, 296.0f, 10.0f)
+
+        private fun colorPickerX(): Float = bounds.right + 8.0f
+
+        private fun colorPickerY(): Float = bounds.y
+
+        private fun hsvFor(color: Int): FloatArray {
+            val r = (color ushr 16) and 0xFF
+            val g = (color ushr 8) and 0xFF
+            val b = color and 0xFF
+            return java.awt.Color.RGBtoHSB(r, g, b, null)
+        }
+
+        private fun colorFromHsv(hue: Float, saturation: Float, value: Float, alpha: Float): Int {
+            val rgb = java.awt.Color.HSBtoRGB(hue.coerceIn(0.0f, 1.0f), saturation.coerceIn(0.0f, 1.0f), value.coerceIn(0.0f, 1.0f))
+            val a = (alpha.coerceIn(0.0f, 1.0f) * 255.0f).toInt().coerceIn(0, 255)
+            return (rgb and 0x00FFFFFF) or (a shl 24)
+        }
+
+        private fun hexNoAlpha(color: Int): String = "#%06X".format(color and 0x00FFFFFF)
+
+        private fun hexWithAlpha(color: Int): String = "#%08X".format(color)
+
         private fun drawButton(context: DrawContext, x: Float, y: Float, width: Float, height: Float, label: String) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, height, 7.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, width, height, 7.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.BUTTON)
             drawTextBox(
                 context = context,
                 text = label,
@@ -3237,13 +4094,13 @@ object HypnosiaMainLayout {
         }
 
         private fun drawSimpleRow(context: DrawContext, x: Float, y: Float, label: String, labelOffX: Float, value: String, valueOffX: Float, valueColor: Int) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 212.0f, 40.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 212.0f, 40.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.BUTTON)
             drawText(context, label, x + labelOffX, y + 12.0f, 13.0f, 0xFFE7E7EA.toInt())
             drawText(context, value, x + valueOffX, y + 12.0f, 13.0f, valueColor)
         }
 
         private fun drawSliderRow(context: DrawContext, x: Float, y: Float, label: String, value: String) {
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 212.0f, 48.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 212.0f, 48.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.BUTTON)
             drawText(context, label, x + 10.0f, y + 8.0f, 13.0f, 0xFFE7E7EA.toInt())
             drawText(context, value, x + 154.0f, y + 8.0f, 13.0f, 0xFFFF2F86.toInt())
             rect(context, x + 82.0f, y + 29.0f, 112.0f, 2.0f, 0xFF34343C.toInt())
@@ -3253,9 +4110,13 @@ object HypnosiaMainLayout {
 
         private fun drawHudSliderRow(context: DrawContext, x: Float, y: Float, label: String, value: Float) {
             val percentage = (value * 100.0f).toInt().coerceIn(0, 100)
-            HypnosiaRenderUtils.drawFigmaBox(context, x, y, 212.0f, 48.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f)
+            drawValueSliderRow(context, x, y, label, "$percentage%", value)
+        }
+
+        private fun drawValueSliderRow(context: DrawContext, x: Float, y: Float, label: String, valueText: String, value: Float) {
+            HypnosiaRenderUtils.drawThemedBox(context, x, y, 212.0f, 48.0f, 9.0f, DRAWER_BG, DRAWER_STROKE, 1.0f, ThemeSettings.ThemeRole.BUTTON)
             drawText(context, label, x + 10.0f, y + 8.0f, 13.0f, 0xFFE7E7EA.toInt())
-            drawText(context, "$percentage%", x + 156.0f, y + 8.0f, 13.0f, 0xFFFF2F86.toInt())
+            drawText(context, valueText, x + 146.0f, y + 8.0f, 13.0f, 0xFFFF2F86.toInt())
             rect(context, x + 82.0f, y + 29.0f, 112.0f, 2.0f, 0xFF34343C.toInt())
             rect(context, x + 82.0f, y + 29.0f, 112.0f * value.coerceIn(0.0f, 1.0f), 2.0f, 0xFFFF2F86.toInt())
             HypnosiaRenderUtils.drawFigmaBox(context, x + 77.0f + 112.0f * value.coerceIn(0.0f, 1.0f), y + 25.0f, 10.0f, 10.0f, 5.0f, 0xFFFF2F86.toInt())
@@ -3283,12 +4144,41 @@ object HypnosiaMainLayout {
             MODEL_SPIN,
         }
 
+        private enum class WorldSliderKind {
+            FOG_DISTANCE,
+            FOG_STRENGTH,
+            FOG_SOFTNESS,
+        }
+
+        private enum class ThemePaletteTarget(val label: String) {
+            BASE("Base"),
+            GRADIENT_START("Gradient A"),
+            GRADIENT_END("Gradient B"),
+        }
+
+        private enum class ColorPickerTarget(val label: String) {
+            ICON("Icon"),
+            FOG("Fog"),
+            THEME_BASE("Base"),
+            THEME_GRADIENT_START("Gradient A"),
+            THEME_GRADIENT_END("Gradient B"),
+        }
+
+        private enum class ColorPickerDrag {
+            CANVAS,
+            HUE,
+            OPACITY,
+        }
+
         companion object {
             private val DRAWER_BG = 0xFE0D0D0D.toInt()
             private val DRAWER_STROKE = 0xFE272727.toInt()
             private val hudModuleIds = setOf("hud.player_info", "hud.inventory", "hud.cooldowns", "hud.potions", "hud.hotkeys")
             const val WIDTH = 236.0f
             const val HEIGHT = 380.0f
+            private const val COLOR_PICKER_WIDTH = 334.0f
+            private const val COLOR_PICKER_HEIGHT = 500.0f
+            private const val COLOR_SWATCH_X = 206.0f
             private const val CONTENT_TOP = 67.0f
             private const val CONTENT_BOTTOM_PAD = 12.0f
         }
@@ -3299,15 +4189,16 @@ object HypnosiaMainLayout {
         val category: HypnosiaCategory,
         val title: String,
         var enabled: Boolean,
+        val hasSettings: Boolean = !id.startsWith("world."),
         var settingsOpen: Boolean = false,
     )
 
     private fun drawPanel(context: DrawContext, x: Float, y: Float, width: Float, height: Float, radius: Float, alpha: Float) {
-        HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, height, radius, withAlpha(SURFACE, alpha), withAlpha(STROKE, alpha), 1.0f)
+        HypnosiaRenderUtils.drawThemedBox(context, x, y, width, height, radius, withAlpha(SURFACE, alpha), withAlpha(STROKE, alpha), 1.0f, ThemeSettings.ThemeRole.CARD)
     }
 
     private fun drawField(context: DrawContext, x: Float, y: Float, width: Float, height: Float, label: String, alpha: Float) {
-        HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, height, 13.0f, withAlpha(0x00111114, alpha), withAlpha(STROKE, alpha), 1.0f)
+        HypnosiaRenderUtils.drawThemedBox(context, x, y, width, height, 13.0f, withAlpha(0x00111114, alpha), withAlpha(STROKE, alpha), 1.0f, ThemeSettings.ThemeRole.INPUT)
         drawTextBox(
             context = context,
             text = label,
@@ -3510,4 +4401,3 @@ object HypnosiaMainLayout {
         return (color and 0x00FFFFFF) or (alpha shl 24)
     }
 }
-

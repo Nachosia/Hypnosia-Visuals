@@ -4,6 +4,7 @@ import dev.hypnosia.HypnosiaClient
 import dev.hypnosia.license.AccountManager
 import dev.hypnosia.license.AccountState
 import dev.hypnosia.license.LicenseRole
+import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.ui.animation.FigmaAnimation
 import dev.hypnosia.ui.animation.SpringFloat
 import dev.hypnosia.ui.layout.Rect
@@ -16,6 +17,7 @@ import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.render.RenderTickCounter
 import net.minecraft.util.Identifier
+import com.sun.management.OperatingSystemMXBean
 import java.lang.management.ManagementFactory
 import kotlin.math.max
 
@@ -28,6 +30,13 @@ object WatermarkHud {
         val textY: Float,
     )
 
+    private data class WatermarkMetrics(
+        val fps: Int = 0,
+        val ping: Int = 0,
+        val ram: Int = 0,
+        val cpu: Int = 0,
+    )
+
     var trackTitle: String = "name track"
     var trackArtist: String = "avtor track"
     var trackProgress: Float = 0.0f
@@ -35,6 +44,11 @@ object WatermarkHud {
     var trackDuration: String = "2:23"
 
     private val musicExpand = SpringFloat(0.0f, stiffness = 310.0f, damping = 28.0f)
+    private val osBean = ManagementFactory.getOperatingSystemMXBean()
+    private val cpuLoadMethod = sequenceOf("getCpuLoad", "getSystemCpuLoad", "getProcessCpuLoad")
+        .firstNotNullOfOrNull { methodName -> osBean.javaClass.methods.firstOrNull { it.name == methodName && it.parameterCount == 0 } }
+    private var cachedMetrics = WatermarkMetrics()
+    private var lastMetricsAtMs = 0L
 
     private val BG = 0xFF0D0D0D.toInt()
     private val STROKE = 0xFF272727.toInt()
@@ -140,10 +154,11 @@ object WatermarkHud {
     }
 
     private fun drawVersion1MainContent(context: DrawContext, client: MinecraftClient, x: Float, y: Float, alpha: Float) {
+        val metrics = metrics(client)
         drawText(context, musicTitle(client), x + 12.0f, y + 9.0f, 188.0f, 46.0f, Text24, WHITE, alpha)
         drawText(
             context = context,
-            text = client.currentFps.toString(),
+            text = metrics.fps.toString(),
             x = x + 199.0f,
             y = y + 9.0f,
             width = 66.0f,
@@ -154,7 +169,7 @@ object WatermarkHud {
             align = FigmaTextRenderer.HorizontalAlign.Right,
         )
         drawText(context, "/", x + 265.0f, y + 9.0f, 17.0f, 46.0f, Text24, MUTED, alpha, FigmaTextRenderer.HorizontalAlign.Center)
-        drawText(context, pingMs(client).toString(), x + 279.0f, y + 9.0f, 60.0f, 46.0f, Text24, WHITE, alpha)
+        drawText(context, metrics.ping.toString(), x + 279.0f, y + 9.0f, 60.0f, 46.0f, Text24, WHITE, alpha)
         drawColoredIcon(context, "black_hole.png", x + 343.0f, y + 14.0f, 32.0f, 32.0f, alpha)
     }
 
@@ -188,8 +203,8 @@ object WatermarkHud {
         val session = (AccountManager.state as? AccountState.Valid)?.session
         val primaryRole = primaryRole(session)
         val role = primaryRole.name
-        val nick = session?.displayName?.takeIf { it.isNotBlank() } ?: client.session.username
-        val fps = "${client.currentFps} fps"
+        val nick = StreamerModeSettings.displayName(session?.displayName?.takeIf { it.isNotBlank() } ?: client.session.username)
+        val fps = "${metrics(client).fps} fps"
 
         val segments = buildList {
             if (WatermarkSettings.isEnabled(WatermarkSettings.Module.ROLE)) {
@@ -231,6 +246,7 @@ object WatermarkHud {
     }
 
     private fun drawVersion2ServerInfo(context: DrawContext, client: MinecraftClient, x: Float, y: Float) {
+        val metrics = metrics(client)
         val segments = buildList {
             if (WatermarkSettings.isEnabled(WatermarkSettings.Module.SERVER)) {
                 add(
@@ -244,7 +260,7 @@ object WatermarkHud {
                 )
             }
             if (WatermarkSettings.isEnabled(WatermarkSettings.Module.PING)) {
-                val ping = "${pingMs(client)} ms"
+                val ping = "${metrics.ping} ms"
                 add(
                     WatermarkSegment(
                         icon = "satellite.png",
@@ -256,7 +272,7 @@ object WatermarkHud {
                 )
             }
             if (WatermarkSettings.isEnabled(WatermarkSettings.Module.RAM)) {
-                val ram = "${ramPercent()}%"
+                val ram = "${metrics.ram}%"
                 add(
                     WatermarkSegment(
                         icon = "ram.png",
@@ -268,7 +284,7 @@ object WatermarkHud {
                 )
             }
             if (WatermarkSettings.isEnabled(WatermarkSettings.Module.CPU)) {
-                val cpu = "${cpuPercent()}%"
+                val cpu = "${metrics.cpu}%"
                 add(
                     WatermarkSegment(
                         icon = "cpu.png",
@@ -341,7 +357,7 @@ object WatermarkHud {
     }
 
     private fun musicTitle(client: MinecraftClient): String =
-        if (trackTitle.isNotBlank() && trackTitle != "Minecraft") trackTitle else client.session.username
+        if (trackTitle.isNotBlank() && trackTitle != "Minecraft") trackTitle else StreamerModeSettings.displayName(client.session.username)
 
     private fun panel(context: DrawContext, x: Float, y: Float, width: Float, height: Float, radius: Float, stroke: Float) {
         HypnosiaRenderUtils.drawFigmaBox(context, x, y, width, height, radius, BG, STROKE, stroke)
@@ -394,21 +410,30 @@ object WatermarkHud {
     private fun pingMs(client: MinecraftClient): Int =
         client.player?.networkHandler?.getPlayerListEntry(client.player!!.uuid)?.latency ?: 0
 
+    private fun metrics(client: MinecraftClient): WatermarkMetrics {
+        val now = System.currentTimeMillis()
+        if (now - lastMetricsAtMs >= METRICS_CACHE_MS) {
+            cachedMetrics = WatermarkMetrics(
+                fps = client.currentFps,
+                ping = pingMs(client),
+                ram = ramPercent(),
+                cpu = cpuPercent(),
+            )
+            lastMetricsAtMs = now
+        }
+        return cachedMetrics
+    }
+
     private fun ramPercent(): Int {
         val runtime = Runtime.getRuntime()
         return (((runtime.totalMemory() - runtime.freeMemory()) * 100L) / runtime.maxMemory()).toInt()
     }
 
     private fun cpuPercent(): Int {
-        val bean = ManagementFactory.getOperatingSystemMXBean()
-        val load = sequenceOf("getCpuLoad", "getSystemCpuLoad", "getProcessCpuLoad")
-            .mapNotNull { methodName ->
-                runCatching {
-                    val method = bean.javaClass.methods.firstOrNull { it.name == methodName && it.parameterCount == 0 }
-                    (method?.invoke(bean) as? Number)?.toDouble()
-                }.getOrNull()
-            }
-            .firstOrNull { it >= 0.0 }
+        val load = (osBean as? OperatingSystemMXBean)?.let { bean ->
+            runCatching { bean.cpuLoad.takeIf { it >= 0.0 } ?: bean.processCpuLoad.takeIf { it >= 0.0 } }.getOrNull()
+        } ?: runCatching { (cpuLoadMethod?.invoke(osBean) as? Number)?.toDouble() }.getOrNull()
+            ?.takeIf { it >= 0.0 }
             ?: return 0
         return (load.coerceIn(0.0, 1.0) * 100.0).toInt()
     }
@@ -429,4 +454,5 @@ object WatermarkHud {
 
     private const val V2_X = 20.0f
     private const val V2_Y = 19.0f
+    private const val METRICS_CACHE_MS = 200L
 }

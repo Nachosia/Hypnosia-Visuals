@@ -9,9 +9,11 @@ in vec4 Color;
 
 out vec2 texCoord;
 out vec4 vertexColor;
+out vec2 screenPos;
 
 void main() {
     gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
     texCoord = UV0;
     vertexColor = Color;
+    screenPos = Position.xy;
 }
