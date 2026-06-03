@@ -263,7 +263,6 @@ object AccountManager {
         val session = (state as? AccountState.Valid)?.session
         val hasGifRights = session?.roleGifLimitBytes != null && session.roleGifMaxConfigs != null
         val configType = if ((rawConfigType == "GIF" || rawConfigType == "PNG") && !hasGifRights) {
-            chatMessage("У вас нет подписки для GIF/PNG конфигов. Сохраняю как обычный конфиг...")
             null
         } else {
             rawConfigType
@@ -279,7 +278,6 @@ object AccountManager {
             return CompletableFuture.completedFuture(CloudSaveResult.Error(validationError))
         }
 
-        chatMessage("Выгрузка конфига §f${source.name.removeSuffix(".json")}§7 в облако...")
         val payload = Base64.getEncoder().encodeToString(bytes)
         val base = if (session == null) createAsync() else CompletableFuture.completedFuture(AccountState.Valid(session))
         return base.thenCompose { created ->
@@ -314,7 +312,6 @@ object AccountManager {
                         AccountConfig.save(accountKey, accountId)
                     }
                     val key = stringValue(body, "configKey") ?: return@thenApply CloudSaveResult.Error("CONFIG_KEY_MISSING")
-                    chatMessage("§aКонфиг выгружен: §f$key")
                     CloudSaveResult.Saved(
                         configKey = key,
                         used = intValue(body, "used") ?: 0,
@@ -334,7 +331,6 @@ object AccountManager {
             return CompletableFuture.completedFuture(CloudLoadResult.Error("CONFIG_KEY_FORMAT"))
         }
 
-        chatMessage("Загрузка конфига §f$normalized§7 из облака...")
         val fields = linkedMapOf("configKey" to normalized)
         (state as? AccountState.Valid)?.session?.let { session ->
             fields["accountKey"] = session.accountKey
@@ -368,7 +364,6 @@ object AccountManager {
                     ?: return@thenApply CloudLoadResult.Error("CONFIG_NAME_FORMAT")
                 target.parent.createDirectories()
                 target.writeBytes(canonicalBytes)
-                chatMessage("§aКонфиг загружен: §f${target.name}")
                 CloudLoadResult.Loaded(target.name)
             }
             .exceptionally {
@@ -381,7 +376,6 @@ object AccountManager {
     fun listCloudConfigsAsync(): CompletableFuture<CloudListResult> {
         val current = (state as? AccountState.Valid)?.session
             ?: return CompletableFuture.completedFuture(CloudListResult.Error("NO_ACCOUNT"))
-        chatMessage("Загрузка списка облачных конфигов...")
         return postJson(
             "/api/cloud-config/list",
             mapOf(
@@ -400,13 +394,11 @@ object AccountManager {
                 chatMessage("§cОшибка получения списка: $status")
                 return@thenApply CloudListResult.Error(status)
             }
-            val listed = CloudListResult.Listed(
+            CloudListResult.Listed(
                 used = intValue(body, "used") ?: 0,
                 limit = intValue(body, "limit") ?: 3,
                 configs = configSummaries(body),
             )
-            chatMessage("Облачные конфиги: §f${listed.used}§7/§f${listed.limit}")
-            listed
         }.exceptionally {
             val reason = networkErrorReason(it)
             chatMessage("§cОшибка сети: $reason")
@@ -435,7 +427,6 @@ object AccountManager {
                 chatMessage("§cКонфиг не найден: §f$raw")
                 return@thenCompose CompletableFuture.completedFuture(CloudDeleteResult.Error("CONFIG_NOT_FOUND"))
             }
-            chatMessage("Удаление конфига §f$key§7 из облака...")
             postJson(
                 "/api/cloud-config/delete",
                 mapOf(
@@ -451,7 +442,6 @@ object AccountManager {
                 }
                 val body = response.body()
                 if (boolValue(body, "ok") == true) {
-                    chatMessage("§aКонфиг §f$key§a удалён из облака")
                     CloudDeleteResult.Deleted(key)
                 } else {
                     val status = stringValue(body, "status") ?: "INVALID_RESPONSE"
