@@ -12,6 +12,7 @@ import dev.hypnosia.hud.WatermarkSettings
 import dev.hypnosia.license.AccountManager
 import dev.hypnosia.license.AccountState
 import dev.hypnosia.license.CloudConfigSummary
+import dev.hypnosia.license.LicenseRole
 import dev.hypnosia.license.CloudDeleteResult
 import dev.hypnosia.license.CloudListResult
 import dev.hypnosia.license.CloudLoadResult
@@ -155,6 +156,26 @@ object HypnosiaMainLayout {
     private fun profileRoleLine(): String {
         val session = (AccountManager.state as? AccountState.Valid)?.session ?: return "no acc"
         return session.roles.firstOrNull { it.name != "USER" }?.name ?: "USER"
+    }
+
+    private fun primaryRole(): LicenseRole? {
+        val session = (AccountManager.state as? AccountState.Valid)?.session ?: return null
+        return session.roles.firstOrNull { it.name != "USER" } ?: session.roles.firstOrNull()
+    }
+
+    private fun profileRoleGradient(): List<Int> {
+        val session = (AccountManager.state as? AccountState.Valid)?.session ?: return emptyList()
+        val role = primaryRole() ?: return emptyList()
+        return parseGradientColors(session.roleGradients[role.name])
+    }
+
+    private fun parseGradientColors(gradientStr: String?): List<Int> {
+        if (gradientStr.isNullOrBlank()) return emptyList()
+        val hexRegex = Regex("#([A-Fa-f0-9]{6})")
+        return hexRegex.findAll(gradientStr).map { match ->
+            val hex = match.groupValues[1]
+            0xFF000000.toInt() or hex.toInt(16)
+        }.toList()
     }
 
     private class ShellNode : BaseUiNode(
@@ -708,18 +729,33 @@ object HypnosiaMainLayout {
                 horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
                 verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
             )
-            drawTextBox(
-                context = context,
-                text = profileRoleLine(),
-                x = bounds.x + 556.5f,
-                y = bounds.y + 26.5f,
-                width = 129.0f,
-                height = 12.0f,
-                color = WHITE,
-                style = FigmaTextRenderer.Styles.Stats,
-                horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
-                verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
-            )
+            val roleGrad = profileRoleGradient()
+            val time = (System.currentTimeMillis() % 1000000L) / 1000f
+            if (roleGrad.size >= 2) {
+                FigmaTextRenderer.drawGradientInBox(
+                    context = context, text = profileRoleLine(),
+                    x = bounds.x + 556.5f, y = bounds.y + 26.5f,
+                    width = 129.0f, height = 12.0f,
+                    color = WHITE, style = FigmaTextRenderer.Styles.Stats,
+                    gradientColor1 = roleGrad[0], gradientColor2 = roleGrad[1], time = time,
+                    horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
+                    verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
+                    fallbackColor = WHITE,
+                )
+            } else {
+                drawTextBox(
+                    context = context,
+                    text = profileRoleLine(),
+                    x = bounds.x + 556.5f,
+                    y = bounds.y + 26.5f,
+                    width = 129.0f,
+                    height = 12.0f,
+                    color = WHITE,
+                    style = FigmaTextRenderer.Styles.Stats,
+                    horizontalAlign = FigmaTextRenderer.HorizontalAlign.Left,
+                    verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
+                )
+            }
         }
 
         private fun renderContent(context: DrawContext) {
@@ -1609,8 +1645,11 @@ object HypnosiaMainLayout {
         }
 
         private fun cloudLabel(config: CloudConfigSummary): String {
-            val name = compact(config.name, 12)
-            return compact("$name  ${config.configKey}", 24)
+            val cleanName = config.name.replace(Regex("""\s*\[(true|false)]$"""), "")
+            val name = compact(cleanName, 12)
+            val typeLabel = config.configType?.takeIf { it.isNotBlank() }
+            val suffix = if (typeLabel != null) " [$typeLabel]" else ""
+            return compact("$name$suffix  ${config.configKey}", 28)
         }
 
         private fun compact(text: String, maxChars: Int): String {
@@ -1947,18 +1986,33 @@ object HypnosiaMainLayout {
                 horizontalAlign = FigmaTextRenderer.HorizontalAlign.Center,
                 verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
             )
-            drawTextBox(
-                context = context,
-                text = profileRoleLine().uppercase(),
-                x = x + 12.0f,
-                y = y + 25.0f,
-                width = 172.0f,
-                height = 13.0f,
-                color = withAlpha(profileRoleColor(), alpha),
-                style = profileRoleStyle,
-                horizontalAlign = FigmaTextRenderer.HorizontalAlign.Center,
-                verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
-            )
+            val roleGrad = profileRoleGradient()
+            val time = (System.currentTimeMillis() % 1000000L) / 1000f
+            if (roleGrad.size >= 2) {
+                FigmaTextRenderer.drawGradientInBox(
+                    context = context, text = profileRoleLine().uppercase(),
+                    x = x + 12.0f, y = y + 25.0f,
+                    width = 172.0f, height = 13.0f,
+                    color = WHITE, style = profileRoleStyle,
+                    gradientColor1 = roleGrad[0], gradientColor2 = roleGrad[1], time = time,
+                    horizontalAlign = FigmaTextRenderer.HorizontalAlign.Center,
+                    verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
+                    fallbackColor = withAlpha(profileRoleColor(), alpha),
+                )
+            } else {
+                drawTextBox(
+                    context = context,
+                    text = profileRoleLine().uppercase(),
+                    x = x + 12.0f,
+                    y = y + 25.0f,
+                    width = 172.0f,
+                    height = 13.0f,
+                    color = withAlpha(profileRoleColor(), alpha),
+                    style = profileRoleStyle,
+                    horizontalAlign = FigmaTextRenderer.HorizontalAlign.Center,
+                    verticalAlign = FigmaTextRenderer.VerticalAlign.Top,
+                )
+            }
 
             renderPlayerModel(context, x, y)
         }

@@ -1,5 +1,6 @@
 package dev.hypnosia.license
 
+import dev.hypnosia.BuildConfig
 import dev.hypnosia.HypnosiaClient
 import dev.hypnosia.config.HypnosiaConfigProfiles
 import java.net.URI
@@ -20,32 +21,56 @@ import net.minecraft.text.Text
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.name
+import kotlin.io.path.outputStream
 import kotlin.io.path.readBytes
 import kotlin.io.path.writeBytes
 
 object AccountManager {
     // Public license/account API. Admin panel is still localhost-only on the VPS.
     private const val DEFAULT_API_URL = "https://api.nachosia.site"
+    private const val SITE_API_URL = "https://nachosia.site"
     private const val MAX_CLOUD_CONFIG_BYTES = 64 * 1024
+    private const val MAX_CLOUD_IMAGE_BYTES = 30 * 1024 * 1024
     private val DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(8)
-    private val CLOUD_REQUEST_TIMEOUT = Duration.ofSeconds(20)
+    private val CLOUD_REQUEST_TIMEOUT = Duration.ofSeconds(30)
+
+    private fun chatMessage(msg: String) {
+        MinecraftClient.getInstance().execute {
+            MinecraftClient.getInstance().player?.sendMessage(Text.literal("§8[§bHypnosia§8] §7$msg"), false)
+        }
+    }
     private val licenseRegex = Regex("^[A-Za-z0-9]{32}$")
     private val cloudConfigKeyRegex = Regex("^[A-Za-z0-9]{8}$")
     private val localConfigNameRegex = Regex("""^[\p{L}\p{N} _.-]{1,48}$""")
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(4))
         .build()
+    private const val MOD_API_KEY = BuildConfig.MOD_API_KEY
 
     private val stateRef = AtomicReference<AccountState>(AccountState.NotChecked)
     private val sessionFutureRef = AtomicReference<CompletableFuture<AccountState>?>(null)
-    private val notificationPollRef = AtomicReference<CompletableFuture<List<String>>?>(null)
+    private val notificationPollRef = AtomicReference<CompletableFuture<List<Pair<String, String>>>?>(null)
     private var lastNotificationPollMs: Long = 0L
+    private val shownNotificationIds = mutableSetOf<String>()
 
     val state: AccountState
         get() = stateRef.get()
 
     val sessionRoles: List<LicenseRole>
         get() = (state as? AccountState.Valid)?.session?.roles ?: listOf(LicenseRole.USER)
+
+    fun logout() {
+        stateRef.set(AccountState.NoAccount)
+        val configFile = HypnosiaPaths.rootFile("account.properties")
+        if (configFile.exists()) {
+            val properties = java.util.Properties()
+            properties["account.key"] = ""
+            properties["account.id"] = ""
+            configFile.outputStream().use { output ->
+                properties.store(output, "Hypnosia account config")
+            }
+        }
+    }
 
     fun hasAccountKey(): Boolean {
         return AccountConfig.loadOrCreate().accountKey != null
@@ -113,6 +138,35 @@ object AccountManager {
         }.exceptionally { false }
     }
 
+    // ─── Site integration (nachosia.site) ───
+
+    fun registerLinkCodeAsync(): CompletableFuture<LinkCodeResult> {
+        val apiUri = secureApiUri(SITE_API_URL) ?: return CompletableFuture.completedFuture(LinkCodeResult.Error("INSECURE_ENDPOINT"))
+        val accountKey = AccountConfig.loadOrCreate().accountKey
+        if (accountKey == null) {
+            return CompletableFuture.completedFuture(LinkCodeResult.Error("NO_ACCOUNT_KEY"))
+        }
+        val request = HttpRequest.newBuilder(apiUri.resolve("/api/mod/link/create"))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .header("Content-Type", "application/json")
+            .header("X-API-Key", MOD_API_KEY)
+            .POST(HttpRequest.BodyPublishers.ofString(jsonObject(mapOf(
+                "accountKey" to accountKey,
+                "hwidHash" to HardwareFingerprint.currentHash64(),
+            ))))
+            .build()
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .thenApply { response ->
+                if (response.statusCode() !in 200..299) {
+                    return@thenApply LinkCodeResult.Error("HTTP_${response.statusCode()}")
+                }
+                val code = stringValue(response.body(), "code") ?: return@thenApply LinkCodeResult.Error("NO_CODE")
+                val expiresIn = intValue(response.body(), "expiresIn") ?: 600
+                LinkCodeResult.Success(code, expiresIn)
+            }
+            .exceptionally { LinkCodeResult.Error(networkErrorReason(it)) }
+    }
+
     fun markOfflineAsync(): CompletableFuture<Boolean> {
         val accountKey = AccountConfig.loadOrCreate().accountKey ?: return CompletableFuture.completedFuture(false)
         return postJson(
@@ -138,11 +192,13 @@ object AccountManager {
         val future = pollNotificationsAsync()
         if (!notificationPollRef.compareAndSet(null, future)) return
 
-        future.whenComplete { messages, _ ->
+        future.whenComplete { notifications, _ ->
             notificationPollRef.set(null)
-            if (messages.isNullOrEmpty()) return@whenComplete
+            if (notifications.isNullOrEmpty()) return@whenComplete
+            val newOnes = notifications.filter { (id, _) -> shownNotificationIds.add(id) }
+            if (newOnes.isEmpty()) return@whenComplete
             client.execute {
-                messages.forEach { message ->
+                newOnes.forEach { (_, message) ->
                     player.sendMessage(Text.literal("Nachosia $message"), false)
                 }
             }
@@ -203,14 +259,29 @@ object AccountManager {
         val bytes = HypnosiaConfigProfiles.exportCanonicalBytes(source.name.removeSuffix(".json"))
             ?: runCatching { source.readBytes() }.getOrNull()?.let(HypnosiaConfigProfiles::canonicalizeBytes)
             ?: return CompletableFuture.completedFuture(CloudSaveResult.Error("LOCAL_CONFIG_READ_FAILED"))
-        val validationError = validateConfigBytes(bytes)
+        val rawConfigType = detectConfigType(bytes)
+        val session = (state as? AccountState.Valid)?.session
+        val hasGifRights = session?.roleGifLimitBytes != null && session.roleGifMaxConfigs != null
+        val configType = if ((rawConfigType == "GIF" || rawConfigType == "PNG") && !hasGifRights) {
+            chatMessage("У вас нет подписки для GIF/PNG конфигов. Сохраняю как обычный конфиг...")
+            null
+        } else {
+            rawConfigType
+        }
+        val maxBytes = if (configType == "GIF" || configType == "PNG") MAX_CLOUD_IMAGE_BYTES else MAX_CLOUD_CONFIG_BYTES
+        val validationError = if (configType == "GIF" || configType == "PNG") {
+            if (bytes.size > maxBytes) "CONFIG_TOO_LARGE" else null
+        } else {
+            validateConfigBytes(bytes)
+        }
         if (validationError != null) {
+            chatMessage("§cОшибка выгрузки: $validationError")
             return CompletableFuture.completedFuture(CloudSaveResult.Error(validationError))
         }
 
+        chatMessage("Выгрузка конфига §f${source.name.removeSuffix(".json")}§7 в облако...")
         val payload = Base64.getEncoder().encodeToString(bytes)
-        val session = state as? AccountState.Valid
-        val base = if (session == null) createAsync() else CompletableFuture.completedFuture(session)
+        val base = if (session == null) createAsync() else CompletableFuture.completedFuture(AccountState.Valid(session))
         return base.thenCompose { created ->
             val current = (created as? AccountState.Valid)?.session
             val fields = linkedMapOf(
@@ -221,16 +292,20 @@ object AccountManager {
             if (current != null) {
                 fields["accountKey"] = current.accountKey
             }
+            configType?.let { fields["configType"] = it }
             LicenseConfig.loadOrCreate().licenseKey?.let { fields["license"] = it }
 
             postJsonWithRetry("/api/cloud-config/save", fields, CLOUD_REQUEST_TIMEOUT, retries = 1)
                 .thenApply { response ->
                     if (response.statusCode() !in 200..299) {
+                        chatMessage("§cОшибка сервера: HTTP ${response.statusCode()}")
                         return@thenApply CloudSaveResult.Error("HTTP_${response.statusCode()}")
                     }
                     val body = response.body()
                     if (boolValue(body, "ok") != true) {
-                        return@thenApply CloudSaveResult.Error(stringValue(body, "status") ?: "INVALID_RESPONSE")
+                        val status = stringValue(body, "status") ?: "INVALID_RESPONSE"
+                        chatMessage("§cОшибка выгрузки: $status")
+                        return@thenApply CloudSaveResult.Error(status)
                     }
 
                     val accountKey = stringValue(body, "accountKey")
@@ -238,14 +313,19 @@ object AccountManager {
                     if (accountKey != null && accountId != null) {
                         AccountConfig.save(accountKey, accountId)
                     }
-
+                    val key = stringValue(body, "configKey") ?: return@thenApply CloudSaveResult.Error("CONFIG_KEY_MISSING")
+                    chatMessage("§aКонфиг выгружен: §f$key")
                     CloudSaveResult.Saved(
-                        configKey = stringValue(body, "configKey") ?: return@thenApply CloudSaveResult.Error("CONFIG_KEY_MISSING"),
+                        configKey = key,
                         used = intValue(body, "used") ?: 0,
                         limit = intValue(body, "limit") ?: 3,
                     )
                 }
-        }.exceptionally { CloudSaveResult.Error(networkErrorReason(it)) }
+        }.exceptionally {
+            val reason = networkErrorReason(it)
+            chatMessage("§cОшибка сети: $reason")
+            CloudSaveResult.Error(reason)
+        }
     }
 
     fun loadCloudConfigAsync(configKey: String, outputName: String?): CompletableFuture<CloudLoadResult> {
@@ -254,6 +334,7 @@ object AccountManager {
             return CompletableFuture.completedFuture(CloudLoadResult.Error("CONFIG_KEY_FORMAT"))
         }
 
+        chatMessage("Загрузка конфига §f$normalized§7 из облака...")
         val fields = linkedMapOf("configKey" to normalized)
         (state as? AccountState.Valid)?.session?.let { session ->
             fields["accountKey"] = session.accountKey
@@ -263,11 +344,14 @@ object AccountManager {
         return postJson("/api/cloud-config/load", fields, CLOUD_REQUEST_TIMEOUT)
             .thenApply { response ->
                 if (response.statusCode() !in 200..299) {
+                    chatMessage("§cОшибка сервера: HTTP ${response.statusCode()}")
                     return@thenApply CloudLoadResult.Error("HTTP_${response.statusCode()}")
                 }
                 val body = response.body()
                 if (boolValue(body, "ok") != true) {
-                    return@thenApply CloudLoadResult.Error(stringValue(body, "status") ?: "INVALID_RESPONSE")
+                    val status = stringValue(body, "status") ?: "INVALID_RESPONSE"
+                    chatMessage("§cОшибка загрузки: $status")
+                    return@thenApply CloudLoadResult.Error(status)
                 }
                 val payload = stringValue(body, "payloadBase64") ?: return@thenApply CloudLoadResult.Error("PAYLOAD_MISSING")
                 val bytes = runCatching { Base64.getDecoder().decode(payload) }.getOrNull()
@@ -276,6 +360,7 @@ object AccountManager {
                     ?: return@thenApply CloudLoadResult.Error("PAYLOAD_SCHEMA_INVALID")
                 val validationError = validateConfigBytes(canonicalBytes)
                 if (validationError != null) {
+                    chatMessage("§cОшибка валидации конфига: $validationError")
                     return@thenApply CloudLoadResult.Error(validationError)
                 }
                 val finalName = outputName?.takeIf { it.isNotBlank() } ?: stringValue(body, "name") ?: normalized
@@ -283,14 +368,20 @@ object AccountManager {
                     ?: return@thenApply CloudLoadResult.Error("CONFIG_NAME_FORMAT")
                 target.parent.createDirectories()
                 target.writeBytes(canonicalBytes)
+                chatMessage("§aКонфиг загружен: §f${target.name}")
                 CloudLoadResult.Loaded(target.name)
             }
-            .exceptionally { CloudLoadResult.Error(networkErrorReason(it)) }
+            .exceptionally {
+                val reason = networkErrorReason(it)
+                chatMessage("§cОшибка сети: $reason")
+                CloudLoadResult.Error(reason)
+            }
     }
 
     fun listCloudConfigsAsync(): CompletableFuture<CloudListResult> {
         val current = (state as? AccountState.Valid)?.session
             ?: return CompletableFuture.completedFuture(CloudListResult.Error("NO_ACCOUNT"))
+        chatMessage("Загрузка списка облачных конфигов...")
         return postJson(
             "/api/cloud-config/list",
             mapOf(
@@ -300,18 +391,27 @@ object AccountManager {
             timeout = CLOUD_REQUEST_TIMEOUT,
         ).thenApply { response ->
             if (response.statusCode() !in 200..299) {
+                chatMessage("§cОшибка сервера: HTTP ${response.statusCode()}")
                 return@thenApply CloudListResult.Error("HTTP_${response.statusCode()}")
             }
             val body = response.body()
             if (boolValue(body, "ok") != true) {
-                return@thenApply CloudListResult.Error(stringValue(body, "status") ?: "INVALID_RESPONSE")
+                val status = stringValue(body, "status") ?: "INVALID_RESPONSE"
+                chatMessage("§cОшибка получения списка: $status")
+                return@thenApply CloudListResult.Error(status)
             }
-            CloudListResult.Listed(
+            val listed = CloudListResult.Listed(
                 used = intValue(body, "used") ?: 0,
                 limit = intValue(body, "limit") ?: 3,
                 configs = configSummaries(body),
             )
-        }.exceptionally { CloudListResult.Error(networkErrorReason(it)) }
+            chatMessage("Облачные конфиги: §f${listed.used}§7/§f${listed.limit}")
+            listed
+        }.exceptionally {
+            val reason = networkErrorReason(it)
+            chatMessage("§cОшибка сети: $reason")
+            CloudListResult.Error(reason)
+        }
     }
 
     fun deleteCloudConfigAsync(nameOrKey: String): CompletableFuture<CloudDeleteResult> {
@@ -332,8 +432,10 @@ object AccountManager {
 
         return keyFuture.thenCompose { key ->
             if (key == null) {
+                chatMessage("§cКонфиг не найден: §f$raw")
                 return@thenCompose CompletableFuture.completedFuture(CloudDeleteResult.Error("CONFIG_NOT_FOUND"))
             }
+            chatMessage("Удаление конфига §f$key§7 из облака...")
             postJson(
                 "/api/cloud-config/delete",
                 mapOf(
@@ -344,33 +446,47 @@ object AccountManager {
                 timeout = CLOUD_REQUEST_TIMEOUT,
             ).thenApply { response ->
                 if (response.statusCode() !in 200..299) {
+                    chatMessage("§cОшибка сервера: HTTP ${response.statusCode()}")
                     return@thenApply CloudDeleteResult.Error("HTTP_${response.statusCode()}")
                 }
                 val body = response.body()
                 if (boolValue(body, "ok") == true) {
+                    chatMessage("§aКонфиг §f$key§a удалён из облака")
                     CloudDeleteResult.Deleted(key)
                 } else {
-                    CloudDeleteResult.Error(stringValue(body, "status") ?: "INVALID_RESPONSE")
+                    val status = stringValue(body, "status") ?: "INVALID_RESPONSE"
+                    chatMessage("§cОшибка удаления: $status")
+                    CloudDeleteResult.Error(status)
                 }
             }
-        }.exceptionally { CloudDeleteResult.Error(networkErrorReason(it)) }
+        }.exceptionally {
+            val reason = networkErrorReason(it)
+            chatMessage("§cОшибка сети: $reason")
+            CloudDeleteResult.Error(reason)
+        }
     }
 
-    private fun pollNotificationsAsync(): CompletableFuture<List<String>> {
+    private fun pollNotificationsAsync(): CompletableFuture<List<Pair<String, String>>> {
         val current = (state as? AccountState.Valid)?.session
             ?: return CompletableFuture.completedFuture(emptyList())
-        return postJson(
-            "/api/notifications/poll",
-            mapOf(
+        val apiUri = secureApiUri(SITE_API_URL)
+            ?: return CompletableFuture.completedFuture(emptyList())
+        val request = HttpRequest.newBuilder(apiUri.resolve("/api/mod/notifications/poll"))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .header("Content-Type", "application/json")
+            .header("X-API-Key", MOD_API_KEY)
+            .POST(HttpRequest.BodyPublishers.ofString(jsonObject(mapOf(
                 "accountKey" to current.accountKey,
-                "hwidHash" to HardwareFingerprint.currentHash64(),
-            ),
-        ).thenApply { response ->
-            if (response.statusCode() !in 200..299) return@thenApply emptyList()
-            val body = response.body()
-            if (boolValue(body, "ok") != true) return@thenApply emptyList()
-            notificationMessages(body)
-        }.exceptionally { emptyList() }
+            ))))
+            .build()
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .thenApply { response ->
+                if (response.statusCode() !in 200..299) return@thenApply emptyList()
+                val body = response.body()
+                val error = stringValue(body, "error")
+                if (error != null) return@thenApply emptyList()
+                notificationMessages(body)
+            }.exceptionally { emptyList() }
     }
 
     private fun infoAsync(accountKey: String): CompletableFuture<AccountState> {
@@ -415,6 +531,8 @@ object AccountManager {
         val accountKey = stringValue(body, "accountKey") ?: return AccountState.InvalidResponse
         val roles = stringArray(body, "roles").mapNotNull(LicenseRole::parse).ifEmpty { listOf(LicenseRole.USER) }
         val roleIcons = stringObject(body, "roleIcons")
+        val roleGradients = stringObject(body, "roleGradients")
+        val nickGradients = stringObject(body, "nickGradients")
         return AccountState.Valid(
             AccountSession(
                 accountId = accountId,
@@ -424,9 +542,16 @@ object AccountManager {
                 contact = stringValue(body, "contact"),
                 roles = roles,
                 roleIcons = roleIcons,
+                roleGradients = roleGradients,
+                nickGradients = nickGradients,
                 cloudUsed = intValue(body, "cloudUsed") ?: 0,
                 cloudLimit = intValue(body, "cloudLimit") ?: 3,
                 status = stringValue(body, "status") ?: "OK",
+                roleGifLimitBytes = longValue(body, "roleGifLimitBytes"),
+                roleGifMaxConfigs = intValue(body, "roleGifMaxConfigs"),
+                roleCanChangeGradient = boolValue(body, "roleCanChangeGradient") ?: false,
+                roleCanResetHwid = boolValue(body, "roleCanResetHwid") ?: false,
+                roleHwidResetCount = intValue(body, "roleHwidResetCount") ?: 0,
             ),
         )
     }
@@ -517,6 +642,14 @@ object AccountManager {
             ?: return "CONFIG_ENCODING"
         if (!looksLikeJsonObject(text)) return "CONFIG_JSON_OBJECT_REQUIRED"
         if (!text.contains("\"format\"") || !text.contains("\"hypnosia-config\"")) return "CONFIG_FORMAT_REQUIRED"
+        return null
+    }
+
+    private fun detectConfigType(bytes: ByteArray): String? {
+        // GIF87a / GIF89a
+        if (bytes.size >= 6 && bytes[0] == 'G'.toByte() && bytes[1] == 'I'.toByte() && bytes[2] == 'F'.toByte()) return "GIF"
+        // PNG
+        if (bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte()) return "PNG"
         return null
     }
 
@@ -668,12 +801,14 @@ object AccountManager {
                     name = stringValue(item, "name") ?: key,
                     disabled = boolValue(item, "disabled") ?: false,
                     updatedAt = stringValue(item, "updatedAt") ?: "",
+                    configType = stringValue(item, "configType"),
+                    gifApproved = boolValue(item, "gifApproved"),
                 )
             }
             .toList()
     }
 
-    private fun notificationMessages(body: String): List<String> {
+    private fun notificationMessages(body: String): List<Pair<String, String>> {
         val array = Regex(""""notifications"\s*:\s*\[(.*)]""", RegexOption.DOT_MATCHES_ALL)
             .find(body)
             ?.groupValues
@@ -681,7 +816,11 @@ object AccountManager {
             ?: return emptyList()
         return Regex("""\{([^{}]*)}""")
             .findAll(array)
-            .mapNotNull { match -> stringValue(match.value, "message") }
+            .mapNotNull { match ->
+                val id = stringValue(match.value, "id") ?: return@mapNotNull null
+                val message = stringValue(match.value, "message") ?: return@mapNotNull null
+                id to message
+            }
             .toList()
     }
 
@@ -705,6 +844,14 @@ object AccountManager {
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
+    }
+
+    private fun longValue(json: String, name: String): Long? {
+        return Regex(""""${Regex.escape(name)}"\s*:\s*(\d+)""")
+            .find(json)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
     }
 
     private fun stringValue(json: String, name: String): String? {
@@ -793,9 +940,16 @@ data class AccountSession(
     val contact: String?,
     val roles: List<LicenseRole>,
     val roleIcons: Map<String, String>,
+    val roleGradients: Map<String, String>,
+    val nickGradients: Map<String, String>,
     val cloudUsed: Int,
     val cloudLimit: Int,
     val status: String,
+    val roleGifLimitBytes: Long? = null,
+    val roleGifMaxConfigs: Int? = null,
+    val roleCanChangeGradient: Boolean = false,
+    val roleCanResetHwid: Boolean = false,
+    val roleHwidResetCount: Int = 0,
 )
 
 data class CloudConfigSummary(
@@ -803,6 +957,8 @@ data class CloudConfigSummary(
     val name: String,
     val disabled: Boolean,
     val updatedAt: String,
+    val configType: String? = null,
+    val gifApproved: Boolean? = null,
 )
 
 sealed class AccountState {

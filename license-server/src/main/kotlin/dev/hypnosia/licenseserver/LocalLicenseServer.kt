@@ -3,6 +3,10 @@ package dev.hypnosia.licenseserver
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
@@ -49,7 +53,7 @@ private const val MAX_CLOUD_CONFIG_SETTING_KEY_LENGTH = 96
 private const val MAX_CLOUD_CONFIG_SETTING_VALUE_LENGTH = 512
 private const val ONLINE_TTL_SECONDS = 90L
 
-private val defaultRoles = setOf("USER", "SPONSOR", "QA", "ADMIN", "OWNER")
+private val defaultRoles = setOf("USER", "SPONSOR", "QA", "HELPER", "MODERATOR", "ADMIN", "OWNER")
 private val roleRegex = Regex("^[A-Z][A-Z0-9_]{1,31}$")
 private val licenseRegex = Regex("^[A-Z0-9]{32}$")
 private val accountKeyRegex = Regex("^[A-Z0-9]{32}$")
@@ -80,6 +84,8 @@ fun main(args: Array<String>) {
         return
     }
 
+    val adminApiKey = env("HYPNOSIA_ADMIN_API_KEY")
+
     val server = HttpServer.create(InetSocketAddress(host, port), 0)
     server.createContext("/api/license/check") { exchange -> checkLicense(exchange, state) }
     server.createContext("/api/account/create") { exchange -> createAccount(exchange, state) }
@@ -87,6 +93,7 @@ fun main(args: Array<String>) {
     server.createContext("/api/account/set-name") { exchange -> setAccountName(exchange, state) }
     server.createContext("/api/account/set-contact") { exchange -> setAccountContact(exchange, state) }
     server.createContext("/api/account/apply-key") { exchange -> applyAccountKey(exchange, state) }
+    server.createContext("/api/account/reset-hwid") { exchange -> resetAccountHwid(exchange, state) }
     server.createContext("/api/cloud-config/save") { exchange -> saveCloudConfig(exchange, state) }
     server.createContext("/api/cloud-config/load") { exchange -> loadCloudConfig(exchange, state) }
     server.createContext("/api/cloud-config/delete") { exchange -> deleteCloudConfig(exchange, state) }
@@ -95,6 +102,11 @@ fun main(args: Array<String>) {
     server.createContext("/api/session/offline") { exchange -> sessionOffline(exchange, state) }
     server.createContext("/api/notifications/poll") { exchange -> pollNotifications(exchange, state) }
     server.createContext("/api/role-icons/") { exchange -> roleIconAsset(exchange, state) }
+    server.createContext("/api/admin/accounts") { exchange -> adminAccounts(exchange, state, adminApiKey) }
+    server.createContext("/api/admin/license/create-or-update") { exchange -> adminCreateOrUpdateLicense(exchange, state, adminApiKey) }
+    server.createContext("/api/admin/gif-configs") { exchange -> adminGifConfigs(exchange, state, adminApiKey) }
+    server.createContext("/api/admin/gif-configs/approve") { exchange -> adminApproveGifConfig(exchange, state, adminApiKey) }
+    server.createContext("/api/admin/gif-configs/deny") { exchange -> adminDenyGifConfig(exchange, state, adminApiKey) }
     server.createContext("/health") { exchange -> json(exchange, 200, """{"ok":true}""") }
     server.executor = Executors.newFixedThreadPool(8)
     server.start()
@@ -574,12 +586,27 @@ private class CloudConfigStorage(val filePath: Path) {
         return lock.read { readAll().count { it.ownerAccountId == accountId && !it.disabled } }
     }
 
-    fun create(account: AccountRecord, ownerLicenseKey: String?, name: String, payloadBase64: String, limit: Int): CloudConfigCreateResult {
+    fun create(account: AccountRecord, ownerLicenseKey: String?, name: String, payloadBase64: String, configType: String?, limit: Int, gifLimitBytes: Long?, gifMaxConfigs: Int?): CloudConfigCreateResult {
         return lock.write {
             val records = readAll().toMutableList()
             val used = records.count { it.ownerAccountId == account.id && !it.disabled }
             if (used >= limit) {
                 return@write CloudConfigCreateResult.LimitReached(used, limit)
+            }
+
+            val isGif = configType == "GIF"
+            if (isGif) {
+                if (gifLimitBytes == null || gifMaxConfigs == null) {
+                    return@write CloudConfigCreateResult.GifNotAllowed
+                }
+                val payloadBytes = runCatching { Base64.getDecoder().decode(payloadBase64) }.getOrNull()
+                if (payloadBytes != null && payloadBytes.size > gifLimitBytes) {
+                    return@write CloudConfigCreateResult.GifTooLarge(gifLimitBytes)
+                }
+                val gifCount = records.count { it.ownerAccountId == account.id && !it.disabled && it.configType == "GIF" }
+                if (gifCount >= gifMaxConfigs) {
+                    return@write CloudConfigCreateResult.GifLimitReached(gifMaxConfigs)
+                }
             }
 
             val now = Instant.now().toString()
@@ -594,6 +621,8 @@ private class CloudConfigStorage(val filePath: Path) {
                 updatedAt = now,
                 disabled = false,
                 payloadBase64 = payloadBase64,
+                configType = configType,
+                gifApproved = if (configType == "GIF" || configType == "PNG") null else true,
             )
             writeAll(records)
             CloudConfigCreateResult.Created(key, used + 1)
@@ -614,6 +643,44 @@ private class CloudConfigStorage(val filePath: Path) {
             val owned = records.any { it.configKey == configKey && it.ownerAccountId == accountId }
             if (!owned) return@write false
             writeAll(records.filterNot { it.configKey == configKey })
+            true
+        }
+    }
+
+    fun listGifConfigs(status: String?): List<CloudConfigRecord> {
+        return lock.read {
+            readAll()
+                .filter { it.configType == "GIF" && !it.disabled }
+                .filter {
+                    when (status) {
+                        "pending" -> it.gifApproved == null
+                        "approved" -> it.gifApproved == true
+                        "denied" -> it.gifApproved == false
+                        else -> true
+                    }
+                }
+                .sortedByDescending { it.updatedAt }
+        }
+    }
+
+    fun approveGifConfig(configKey: String): Boolean {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.configKey == configKey && it.configType == "GIF" }
+            if (index < 0) return@write false
+            records[index] = records[index].copy(gifApproved = true, updatedAt = Instant.now().toString())
+            writeAll(records)
+            true
+        }
+    }
+
+    fun denyGifConfig(configKey: String): Boolean {
+        return lock.write {
+            val records = readAll().toMutableList()
+            val index = records.indexOfFirst { it.configKey == configKey && it.configType == "GIF" }
+            if (index < 0) return@write false
+            records[index] = records[index].copy(gifApproved = false, updatedAt = Instant.now().toString())
+            writeAll(records)
             true
         }
     }
@@ -741,6 +808,8 @@ private class PresenceStorage(val filePath: Path) {
         }
     }
 
+    fun all(): List<PresenceRecord> = lock.read { readAll() }
+
     fun onlineAccountIds(now: Instant = Instant.now()): Set<Int> {
         return lock.read {
             readAll()
@@ -864,6 +933,7 @@ private data class AccountRecord(
     val createdAt: String,
     val disabled: Boolean,
     val cloudUploadBanned: Boolean,
+    val metadata: String? = null,
 ) {
     fun toLine(): String {
         return listOf(
@@ -875,6 +945,7 @@ private data class AccountRecord(
             createdAt,
             disabled.toString(),
             cloudUploadBanned.toString(),
+            metadata ?: "",
         ).joinToString("\t") { it.tsv() }
     }
 
@@ -891,6 +962,7 @@ private data class AccountRecord(
                 createdAt = if (parts.size >= 7) parts[5] else parts[4],
                 disabled = (if (parts.size >= 7) parts[6] else parts[5]).toBooleanStrictOrNull() ?: false,
                 cloudUploadBanned = if (parts.size >= 8) parts[7].toBooleanStrictOrNull() ?: false else false,
+                metadata = if (parts.size >= 9) parts[8].ifBlank { null } else null,
             )
         }
     }
@@ -930,6 +1002,8 @@ private data class CloudConfigRecord(
     val updatedAt: String,
     val disabled: Boolean,
     val payloadBase64: String,
+    val configType: String? = null,
+    val gifApproved: Boolean? = null,
 ) {
     fun toLine(): String {
         return listOf(
@@ -942,12 +1016,29 @@ private data class CloudConfigRecord(
             updatedAt,
             disabled.toString(),
             payloadBase64,
+            configType ?: "",
+            gifApproved?.toString() ?: "",
         ).joinToString("\t") { it.tsv() }
     }
 
     companion object {
         fun fromLine(line: String): CloudConfigRecord? {
             val parts = line.split('\t')
+            if (parts.size >= 10) {
+                return CloudConfigRecord(
+                    configKey = parts[0],
+                    ownerAccountId = parts[1].toIntOrNull(),
+                    ownerHwidHash = parts[2],
+                    ownerLicenseKey = parts[3].ifBlank { null },
+                    name = parts[4],
+                    createdAt = parts[5],
+                    updatedAt = parts[6],
+                    disabled = parts[7].toBooleanStrictOrNull() ?: false,
+                    payloadBase64 = parts[8],
+                    configType = parts.getOrNull(9)?.ifBlank { null },
+                    gifApproved = parts.getOrNull(10)?.ifBlank { null }?.toBooleanStrictOrNull(),
+                )
+            }
             if (parts.size >= 9) {
                 return CloudConfigRecord(
                     configKey = parts[0],
@@ -959,6 +1050,7 @@ private data class CloudConfigRecord(
                     updatedAt = parts[6],
                     disabled = parts[7].toBooleanStrictOrNull() ?: false,
                     payloadBase64 = parts[8],
+                    configType = parts.getOrNull(9)?.ifBlank { null },
                 )
             }
             if (parts.size >= 8) {
@@ -972,6 +1064,7 @@ private data class CloudConfigRecord(
                     updatedAt = parts[5],
                     disabled = parts[6].toBooleanStrictOrNull() ?: false,
                     payloadBase64 = parts[7],
+                    configType = parts.getOrNull(8)?.ifBlank { null },
                 )
             }
             return null
@@ -984,6 +1077,15 @@ private data class RoleSettingsRecord(
     val cloudLimit: Int,
     val saveCooldownSeconds: Int,
     val loadCooldownSeconds: Int,
+    val textGradient: String? = null,
+    val nickGradient: String? = null,
+    val iconFile: String? = null,
+    val gifLimitBytes: Long? = null,
+    val gifMaxConfigs: Int? = null,
+    val canChangeGradient: Boolean = false,
+    val canResetHwid: Boolean = false,
+    val hwidResetCount: Int = 0,
+    val displayName: String? = null,
 ) {
     fun toLine(): String {
         return listOf(
@@ -991,6 +1093,15 @@ private data class RoleSettingsRecord(
             cloudLimit.toString(),
             saveCooldownSeconds.toString(),
             loadCooldownSeconds.toString(),
+            textGradient ?: "",
+            nickGradient ?: "",
+            iconFile ?: "",
+            gifLimitBytes?.toString() ?: "",
+            gifMaxConfigs?.toString() ?: "",
+            canChangeGradient.toString(),
+            canResetHwid.toString(),
+            hwidResetCount.toString(),
+            displayName ?: "",
         ).joinToString("\t") { it.tsv() }
     }
 
@@ -1004,6 +1115,15 @@ private data class RoleSettingsRecord(
                 cloudLimit = parts[1].toIntOrNull()?.coerceIn(0, 1000) ?: return null,
                 saveCooldownSeconds = parts[2].toIntOrNull()?.coerceIn(0, 3600) ?: return null,
                 loadCooldownSeconds = parts[3].toIntOrNull()?.coerceIn(0, 3600) ?: return null,
+                textGradient = parts.getOrNull(4)?.ifBlank { null },
+                nickGradient = parts.getOrNull(5)?.ifBlank { null },
+                iconFile = parts.getOrNull(6)?.ifBlank { null },
+                gifLimitBytes = parts.getOrNull(7)?.ifBlank { null }?.toLongOrNull(),
+                gifMaxConfigs = parts.getOrNull(8)?.ifBlank { null }?.toIntOrNull(),
+                canChangeGradient = parts.getOrNull(9)?.toBooleanStrictOrNull() ?: false,
+                canResetHwid = parts.getOrNull(10)?.toBooleanStrictOrNull() ?: false,
+                hwidResetCount = parts.getOrNull(11)?.toIntOrNull() ?: 0,
+                displayName = parts.getOrNull(12)?.ifBlank { null },
             )
         }
     }
@@ -1013,6 +1133,11 @@ private data class RoleRuntimeSettings(
     val cloudLimit: Int,
     val saveCooldownSeconds: Int,
     val loadCooldownSeconds: Int,
+    val gifLimitBytes: Long?,
+    val gifMaxConfigs: Int?,
+    val canChangeGradient: Boolean,
+    val canResetHwid: Boolean,
+    val hwidResetCount: Int,
 )
 
 private sealed interface RateLimitResult {
@@ -1104,6 +1229,9 @@ private sealed class LicenseCheckResult {
 private sealed class CloudConfigCreateResult {
     data class Created(val configKey: String, val used: Int) : CloudConfigCreateResult()
     data class LimitReached(val used: Int, val limit: Int) : CloudConfigCreateResult()
+    data object GifNotAllowed : CloudConfigCreateResult()
+    data class GifTooLarge(val limitBytes: Long) : CloudConfigCreateResult()
+    data class GifLimitReached(val maxConfigs: Int) : CloudConfigCreateResult()
 }
 
 private fun checkLicense(exchange: HttpExchange, state: ServerState) {
@@ -1185,6 +1313,28 @@ private fun applyAccountKey(exchange: HttpExchange, state: ServerState) {
     }
 }
 
+private fun resetAccountHwid(exchange: HttpExchange, state: ServerState) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val body = exchange.bodyString()
+    val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+
+    // Reset HWID on all linked licenses
+    val links = state.roleLinks.linksForAccount(account.id)
+    for (link in links) {
+        state.licenses.updateExisting(link.licenseKey) { copy(hwidHash = null, boundAt = null) }
+        state.roleLinks.unlinkLicense(link.licenseKey)
+    }
+
+    // Generate new account key
+    val usedKeys = state.accounts.all().map { it.accountKey }.toSet()
+    val newAccountKey = generateUniqueKey(32, usedKeys)
+    state.accounts.updateExisting(account.id) { copy(accountKey = newAccountKey, hwidHash = "") }
+
+    val updated = state.accounts.findById(account.id) ?: account
+    json(exchange, 200, """{"ok":true,"status":"HWID_RESET","newAccountKey":"${newAccountKey}","accountId":${updated.id}}""")
+}
+
 private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
     if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
 
@@ -1201,9 +1351,15 @@ private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
     val payloadBytes = runCatching { Base64.getDecoder().decode(payloadBase64) }.getOrNull()
     if (payloadBytes == null || payloadBytes.isEmpty()) return json(exchange, 200, apiError("PAYLOAD_FORMAT"))
     if (payloadBytes.size > MAX_CLOUD_CONFIG_PAYLOAD_BYTES) return json(exchange, 200, apiError("PAYLOAD_TOO_LARGE"))
-    val safePayloadBytes = canonicalizeCloudConfigPayload(payloadBytes)
-        ?: return json(exchange, 200, apiError("PAYLOAD_SCHEMA_INVALID"))
-    val safePayloadBase64 = Base64.getEncoder().encodeToString(safePayloadBytes)
+
+    val configType = jsonString(body, "configType")?.trim()?.uppercase(Locale.ROOT)?.takeIf { it.isNotBlank() }
+    val safePayloadBase64 = if (configType == "GIF" || configType == "PNG") {
+        payloadBase64
+    } else {
+        val safePayloadBytes = canonicalizeCloudConfigPayload(payloadBytes)
+            ?: return json(exchange, 200, apiError("PAYLOAD_SCHEMA_INVALID"))
+        Base64.getEncoder().encodeToString(safePayloadBytes)
+    }
 
     val roles = accountRoles(account, state)
     val roleSettings = roleSettingsForRoles(roles, state)
@@ -1211,7 +1367,7 @@ private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
         is RateLimitResult.Limited -> return json(exchange, 200, rateLimitJson(limit.retryAfterSeconds))
         RateLimitResult.Allowed -> Unit
     }
-    when (val result = state.cloudConfigs.create(account, ownerLicenseKey, name, safePayloadBase64, roleSettings.cloudLimit)) {
+    when (val result = state.cloudConfigs.create(account, ownerLicenseKey, name, safePayloadBase64, configType, roleSettings.cloudLimit, roleSettings.gifLimitBytes, roleSettings.gifMaxConfigs)) {
         is CloudConfigCreateResult.Created -> {
             json(
                 exchange,
@@ -1221,6 +1377,15 @@ private fun saveCloudConfig(exchange: HttpExchange, state: ServerState) {
         }
         is CloudConfigCreateResult.LimitReached -> {
             json(exchange, 200, """{"ok":false,"status":"LIMIT_REACHED","used":${result.used},"limit":${result.limit}}""")
+        }
+        CloudConfigCreateResult.GifNotAllowed -> {
+            json(exchange, 200, """{"ok":false,"status":"GIF_NOT_ALLOWED"}""")
+        }
+        is CloudConfigCreateResult.GifTooLarge -> {
+            json(exchange, 200, """{"ok":false,"status":"GIF_TOO_LARGE","limitBytes":${result.limitBytes}}""")
+        }
+        is CloudConfigCreateResult.GifLimitReached -> {
+            json(exchange, 200, """{"ok":false,"status":"GIF_LIMIT_REACHED","maxConfigs":${result.maxConfigs}}""")
         }
     }
 }
@@ -1233,6 +1398,7 @@ private fun loadCloudConfig(exchange: HttpExchange, state: ServerState) {
     if (key == null || !cloudConfigKeyRegex.matches(key)) return json(exchange, 200, apiError("CONFIG_KEY_FORMAT"))
 
     val account = accountFromBodyIfPresent(body, state)
+    if (account?.cloudUploadBanned == true) return json(exchange, 200, apiError("CLOUD_UPLOAD_BANNED"))
     val roles = account?.let { accountRoles(it, state) } ?: listOf("USER")
     val roleSettings = roleSettingsForRoles(roles, state)
     val bucket = account?.let { "cloud-load:${it.id}" }
@@ -1243,10 +1409,12 @@ private fun loadCloudConfig(exchange: HttpExchange, state: ServerState) {
     }
 
     val record = state.cloudConfigs.findActive(key) ?: return json(exchange, 200, apiError("CONFIG_NOT_FOUND"))
+    val typeField = record.configType?.let { ""","configType":"$it""" } ?: ""
+    val gifField = if (record.configType == "GIF") ""","gifApproved":${record.gifApproved}""" else ""
     json(
         exchange,
         200,
-        """{"ok":true,"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","payloadBase64":"${jsonEscape(record.payloadBase64)}","updatedAt":"${record.updatedAt}"}""",
+        """{"ok":true,"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","payloadBase64":"${jsonEscape(record.payloadBase64)}","updatedAt":"${record.updatedAt}"$typeField$gifField}""",
     )
 }
 
@@ -1255,6 +1423,7 @@ private fun deleteCloudConfig(exchange: HttpExchange, state: ServerState) {
 
     val body = exchange.bodyString()
     val account = requireAccount(body, state) ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    if (account.cloudUploadBanned) return json(exchange, 200, apiError("CLOUD_UPLOAD_BANNED"))
     val key = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
     if (key == null || !cloudConfigKeyRegex.matches(key)) return json(exchange, 200, apiError("CONFIG_KEY_FORMAT"))
 
@@ -1267,11 +1436,16 @@ private fun listCloudConfigs(exchange: HttpExchange, state: ServerState) {
 
     val account = requireAccount(exchange.bodyString(), state)
         ?: return json(exchange, 200, apiError("ACCOUNT_NOT_FOUND"))
+    if (account.cloudUploadBanned) return json(exchange, 200, apiError("CLOUD_UPLOAD_BANNED"))
     val configs = state.cloudConfigs.listOwned(account.id)
     val used = configs.count { !it.disabled }
     val roleSettings = roleSettingsForRoles(accountRoles(account, state), state)
     val items = configs.joinToString(",") { record ->
-        """{"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","disabled":${record.disabled},"updatedAt":"${record.updatedAt}"}"""
+        val typeField = record.configType?.let { """"configType":"$it"""" } ?: ""
+        val gifField = if (record.configType == "GIF") """"gifApproved":${record.gifApproved}""" else ""
+        val base = """{"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","disabled":${record.disabled},"updatedAt":"${record.updatedAt}"""
+        val fields = listOfNotNull(typeField.takeIf { it.isNotEmpty() }, gifField.takeIf { it.isNotEmpty() }).joinToString(",")
+        if (fields.isNotEmpty()) "$base,$fields}" else "$base}"
     }
     json(exchange, 200, """{"ok":true,"used":$used,"limit":${roleSettings.cloudLimit},"configs":[$items]}""")
 }
@@ -1307,6 +1481,258 @@ private fun pollNotifications(exchange: HttpExchange, state: ServerState) {
         """{"id":${record.id},"message":"${jsonEscape(record.message)}","createdAt":"${record.createdAt}"}"""
     }
     json(exchange, 200, """{"ok":true,"notifications":[$items]}""")
+}
+
+private fun adminCreateOrUpdateLicense(exchange: HttpExchange, state: ServerState, adminApiKey: String?) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+
+    val providedKey = exchange.requestHeaders.getFirst("X-Admin-Key")
+    if (adminApiKey.isNullOrBlank() || providedKey != adminApiKey) {
+        return json(exchange, 200, """{"success":false,"error":"UNAUTHORIZED"}""")
+    }
+
+    val body = exchange.bodyString()
+
+    val accountKey = jsonString(body, "accountKey")?.trim()?.uppercase(Locale.ROOT)
+    val roleInput = jsonString(body, "role")?.trim()?.uppercase(Locale.ROOT)
+    val durationDays = run {
+        val str = jsonString(body, "durationDays")
+        if (str != null) return@run str.toIntOrNull()
+        val regex = Regex("\"durationDays\"\\s*:\\s*(-?\\d+)")
+        regex.find(body)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    if (accountKey == null || !accountKeyRegex.matches(accountKey)) {
+        return json(exchange, 200, """{"success":false,"error":"INVALID_ACCOUNT_KEY"}""")
+    }
+    if (roleInput == null) {
+        return json(exchange, 200, """{"success":false,"error":"INVALID_ROLE"}""")
+    }
+    if (durationDays == null || durationDays <= 0) {
+        return json(exchange, 200, """{"success":false,"error":"INVALID_DURATION"}""")
+    }
+
+    val normalizedRole = when (roleInput) {
+        "SPONSOR" -> "SPONSOR"
+        "SPONSOR+" -> "SPONSOR_PLUS"
+        "SPONSOR++" -> "SPONSOR_PLUS_PLUS"
+        else -> roleInput.takeIf { roleRegex.matches(it) }
+    }
+    if (normalizedRole == null) {
+        return json(exchange, 200, """{"success":false,"error":"INVALID_ROLE"}""")
+    }
+
+    val account = state.accounts.findByKey(accountKey)
+        ?: return json(exchange, 200, """{"success":false,"error":"ACCOUNT_NOT_FOUND"}""")
+
+    // Determine all required roles based on purchased tier
+    val requiredRoles = when (normalizedRole) {
+        "SPONSOR" -> listOf("SPONSOR")
+        "SPONSOR_PLUS" -> listOf("SPONSOR", "SPONSOR_PLUS")
+        "SPONSOR_PLUS_PLUS" -> listOf("SPONSOR", "SPONSOR_PLUS", "SPONSOR_PLUS_PLUS")
+        else -> listOf(normalizedRole)
+    }
+
+    val now = Instant.now()
+    val durationSeconds = durationDays.toLong() * 24 * 60 * 60
+
+    val links = state.roleLinks.linksForAccount(account.id)
+
+    // Resolve the existing license (if any) for each role we are about to apply.
+    val existingByRole = HashMap<String, LicenseRecord?>()
+    for (role in requiredRoles) {
+        var existingLicense: LicenseRecord? = null
+        for (link in links) {
+            val license = state.licenses.find(link.licenseKey)
+            if (license != null && license.role == role) {
+                existingLicense = license
+                break
+            }
+        }
+        existingByRole[role] = existingLicense
+    }
+
+    // Single unified expiry date for ALL roles of this purchase, so a tier and
+    // its sub-tiers (e.g. SPONSOR / SPONSOR_PLUS / SPONSOR_PLUS_PLUS) always end
+    // on the same day. The site may dictate the absolute target date directly;
+    // otherwise we fall back to (latest future expiry among affected roles) + duration.
+    val targetExpiresInput = jsonString(body, "targetExpiresAt")
+        ?.let { raw -> runCatching { Instant.parse(raw) }.getOrNull() }
+
+    val targetExpires: Instant = if (targetExpiresInput != null) {
+        targetExpiresInput
+    } else {
+        val latestExisting = requiredRoles
+            .mapNotNull { role -> existingByRole[role]?.expiresAt }
+            .mapNotNull { runCatching { Instant.parse(it) }.getOrNull() }
+            .filter { it.isAfter(now) }
+            .maxOrNull()
+        val base = latestExisting ?: now
+        base.plusSeconds(durationSeconds)
+    }
+    val expiresAt = targetExpires.toString()
+    val baseExpires = expiresAt
+
+    val results = mutableListOf<String>()
+
+    for (role in requiredRoles) {
+        val existingLicense = existingByRole[role]
+        val isNewKey: Boolean
+        val keyString: String
+
+        if (existingLicense != null) {
+            isNewKey = false
+            keyString = existingLicense.licenseKey
+            state.licenses.updateExisting(keyString) { copy(expiresAt = expiresAt) }
+        } else {
+            isNewKey = true
+            val usedKeys = state.licenses.all().map { it.licenseKey }.toSet()
+            keyString = generateUniqueKey(32, usedKeys)
+            state.licenses.create(
+                LicenseRecord(
+                    licenseKey = keyString,
+                    role = role,
+                    hwidHash = null,
+                    createdAt = now.toString(),
+                    boundAt = null,
+                    expiresAt = expiresAt,
+                    disabled = false,
+                ),
+            )
+            state.roleLinks.linkExclusive(account.id, keyString)
+        }
+
+        results += """{"role":"$role","key":"$keyString","expiresAt":"$expiresAt","isNewKey":$isNewKey}"""
+    }
+
+    // Apply limits to role settings for the highest tier
+    val limitsObj = jsonObjectString(body, "limits")
+    if (limitsObj != null) {
+        state.accounts.updateExisting(account.id) { copy(metadata = limitsObj) }
+    }
+
+    json(
+        exchange,
+        200,
+        """{"success":true,"keys":[${results.joinToString(",")}],"expiresAt":"$baseExpires"}""",
+    )
+}
+
+
+
+private fun adminAccounts(exchange: HttpExchange, state: ServerState, adminApiKey: String?) {
+    if (exchange.requestMethod != "GET") return text(exchange, 405, "Method not allowed")
+    val providedKey = exchange.requestHeaders.getFirst("X-Admin-Key")
+    if (adminApiKey.isNullOrBlank() || providedKey != adminApiKey) {
+        return json(exchange, 200, """{"ok":false,"error":"UNAUTHORIZED"}""")
+    }
+
+    val accounts = state.accounts.all().sortedBy { it.id }
+    val allLinks = state.roleLinks.all()
+    val allPresence = state.presence.all()
+    val now = Instant.now()
+    val body = buildString {
+        append("[")
+        accounts.forEachIndexed { i, a ->
+            if (i > 0) append(",")
+            val roles = accountRoles(a, state)
+            val presence = allPresence.firstOrNull { it.accountId == a.id }
+            val isOnline = presence?.isOnline(now) == true
+            val roleGradientsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleGradient(it, state)) + "\"" }
+            val nickGradientsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleNickGradient(it, state)) + "\"" }
+            val roleIconsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleIcon(it, state)) + "\"" }
+            val roleDisplayNamesJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleDisplayName(it, state)) + "\"" }
+            append("{")
+            append("\"id\":${a.id},")
+            append("\"accountKey\":\"${a.accountKey}\",")
+            append("\"hwidHash\":\"${a.hwidHash}\",")
+            append("\"displayName\":${jsonNullable(a.displayName)},")
+            append("\"contact\":${jsonNullable(a.contact)},")
+            append("\"createdAt\":\"${a.createdAt}\",")
+            append("\"disabled\":${a.disabled},")
+            append("\"isOnline\":$isOnline,")
+            append("\"lastSeenAt\":\"${presence?.lastSeenAt ?: a.createdAt}\",")
+            append("\"roles\":[${roles.joinToString(",") { "\"$it\"" }}],")
+            append("\"roleGradients\":{$roleGradientsJson},")
+            append("\"nickGradients\":{$nickGradientsJson},")
+            append("\"roleIcons\":{$roleIconsJson},")
+            append("\"roleDisplayNames\":{$roleDisplayNamesJson}")
+            append("}")
+        }
+        append("]")
+    }
+    json(exchange, 200, body)
+}
+
+private fun adminGifConfigs(exchange: HttpExchange, state: ServerState, adminApiKey: String?) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+    val providedKey = exchange.requestHeaders.getFirst("X-Admin-Key")
+    if (adminApiKey.isNullOrBlank() || providedKey != adminApiKey) {
+        return json(exchange, 200, """{"ok":false,"error":"UNAUTHORIZED"}""")
+    }
+
+    val body = exchange.bodyString()
+    val status = jsonString(body, "status")?.trim()?.lowercase(Locale.ROOT)
+    val configs = state.cloudConfigs.listGifConfigs(status)
+    val items = configs.joinToString(",") { record ->
+        val account = record.ownerAccountId?.let { state.accounts.findById(it) }
+        """{"configKey":"${record.configKey}","name":"${jsonEscape(record.name)}","accountId":${record.ownerAccountId ?: 0},"accountName":"${jsonEscape(account?.displayName ?: "Unknown")}","gifFileName":"${jsonEscape(record.name)}","gifFileSize":${runCatching { Base64.getDecoder().decode(record.payloadBase64).size }.getOrDefault(0)},"gifApproved":${record.gifApproved},"updatedAt":"${record.updatedAt}"}"""
+    }
+    json(exchange, 200, """{"ok":true,"configs":[$items]}""")
+}
+
+private fun adminApproveGifConfig(exchange: HttpExchange, state: ServerState, adminApiKey: String?) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+    val providedKey = exchange.requestHeaders.getFirst("X-Admin-Key")
+    if (adminApiKey.isNullOrBlank() || providedKey != adminApiKey) {
+        return json(exchange, 200, """{"ok":false,"error":"UNAUTHORIZED"}""")
+    }
+
+    val body = exchange.bodyString()
+    val configKey = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
+    if (configKey == null || !cloudConfigKeyRegex.matches(configKey)) {
+        return json(exchange, 200, """{"ok":false,"error":"INVALID_CONFIG_KEY"}""")
+    }
+    val record = state.cloudConfigs.findActive(configKey)
+    if (record == null) {
+        return json(exchange, 200, """{"ok":false,"error":"CONFIG_NOT_FOUND"}""")
+    }
+    val success = state.cloudConfigs.approveGifConfig(configKey)
+    if (!success) {
+        return json(exchange, 200, """{"ok":false,"error":"CONFIG_NOT_FOUND"}""")
+    }
+    if (record.ownerAccountId != null) {
+        state.accounts.updateExisting(record.ownerAccountId) { copy(cloudUploadBanned = false) }
+    }
+    json(exchange, 200, """{"ok":true,"status":"APPROVED"}""")
+}
+
+private fun adminDenyGifConfig(exchange: HttpExchange, state: ServerState, adminApiKey: String?) {
+    if (exchange.requestMethod != "POST") return text(exchange, 405, "Method not allowed")
+    val providedKey = exchange.requestHeaders.getFirst("X-Admin-Key")
+    if (adminApiKey.isNullOrBlank() || providedKey != adminApiKey) {
+        return json(exchange, 200, """{"ok":false,"error":"UNAUTHORIZED"}""")
+    }
+
+    val body = exchange.bodyString()
+    val configKey = jsonString(body, "configKey")?.trim()?.uppercase(Locale.ROOT)
+    if (configKey == null || !cloudConfigKeyRegex.matches(configKey)) {
+        return json(exchange, 200, """{"ok":false,"error":"INVALID_CONFIG_KEY"}""")
+    }
+    val record = state.cloudConfigs.findActive(configKey)
+    if (record == null) {
+        return json(exchange, 200, """{"ok":false,"error":"CONFIG_NOT_FOUND"}""")
+    }
+    val success = state.cloudConfigs.denyGifConfig(configKey)
+    if (!success) {
+        return json(exchange, 200, """{"ok":false,"error":"CONFIG_NOT_FOUND"}""")
+    }
+    if (record.ownerAccountId != null) {
+        state.accounts.updateExisting(record.ownerAccountId) { copy(cloudUploadBanned = true) }
+        val account = state.accounts.findById(record.ownerAccountId)
+        // Discord notification is sent by the site (nachosia.site) after successful deny
+    }
+    json(exchange, 200, """{"ok":true,"status":"DENIED"}""")
 }
 
 private fun normalizeCloudConfigName(value: String): String? {
@@ -1606,7 +2032,10 @@ private fun accountPayload(account: AccountRecord, state: ServerState, status: S
     val used = state.cloudConfigs.usedSlots(account.id)
     val roles = accountRoles(account, state)
     val rolesJson = roles.joinToString(",") { """"$it"""" }
-    val roleIconsJson = roles.joinToString(",") { """"$it":"${jsonEscape(roleIcon(it, state))}"""" }
+    val roleIconsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleIcon(it, state)) + "\"" }
+    val roleGradientsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleGradient(it, state)) + "\"" }
+    val nickGradientsJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleNickGradient(it, state)) + "\"" }
+    val roleDisplayNamesJson = roles.joinToString(",") { "\"" + it + "\":\"" + jsonEscape(roleDisplayName(it, state)) + "\"" }
     val roleSettings = roleSettingsForRoles(roles, state)
     return buildString {
         append("""{"ok":true,"status":"${jsonEscape(status)}","accountId":${account.id},"accountKey":"${account.accountKey}","createdAt":"${account.createdAt}","displayName":""")
@@ -1615,7 +2044,13 @@ private fun accountPayload(account: AccountRecord, state: ServerState, status: S
         append(jsonNullable(account.contact))
         append(""","roles":[""")
         append(rolesJson)
-        append("""],"roleIcons":{$roleIconsJson},"cloudUsed":$used,"cloudLimit":${roleSettings.cloudLimit},"cloudSaveCooldownSeconds":${roleSettings.saveCooldownSeconds},"cloudLoadCooldownSeconds":${roleSettings.loadCooldownSeconds},"cloudUploadBanned":${account.cloudUploadBanned}}""")
+        append("""],"roleIcons":{$roleIconsJson},"roleGradients":{$roleGradientsJson},"nickGradients":{$nickGradientsJson},"roleDisplayNames":{$roleDisplayNamesJson},"cloudUsed":$used,"cloudLimit":${roleSettings.cloudLimit},"cloudSaveCooldownSeconds":${roleSettings.saveCooldownSeconds},"cloudLoadCooldownSeconds":${roleSettings.loadCooldownSeconds},"cloudUploadBanned":${account.cloudUploadBanned}""")
+        append(",\"roleGifLimitBytes\":${roleSettings.gifLimitBytes?.toString() ?: "null"}")
+        append(",\"roleGifMaxConfigs\":${roleSettings.gifMaxConfigs?.toString() ?: "null"}")
+        append(",\"roleCanChangeGradient\":${roleSettings.canChangeGradient}")
+        append(",\"roleCanResetHwid\":${roleSettings.canResetHwid}")
+        append(",\"roleHwidResetCount\":${roleSettings.hwidResetCount}")
+        append("}")
     }
 }
 
@@ -1638,6 +2073,13 @@ private fun accountRoles(account: AccountRecord, state: ServerState): List<Strin
             found += license.role
         }
     }
+    if ("SPONSOR_PLUS_PLUS" in found) {
+        found += "SPONSOR_PLUS"
+        found += "SPONSOR"
+    }
+    if ("SPONSOR_PLUS" in found) {
+        found += "SPONSOR"
+    }
     return found.sortedWith(compareByDescending<String> { rolePriority(it) }.thenBy { it })
 }
 
@@ -1645,10 +2087,14 @@ private fun rolePriority(role: String): Int {
     return when (role) {
         "OWNER" -> 50
         "ADMIN" -> 40
+        "MODERATOR" -> 36
+        "HELPER" -> 34
         "QA" -> 30
+        "SPONSOR_PLUS_PLUS" -> 28
+        "SPONSOR_PLUS" -> 26
         "SPONSOR" -> 20
         "USER" -> 10
-        else -> 0
+        else -> 25
     }
 }
 
@@ -1658,15 +2104,25 @@ private fun roleSettingsForRoles(roles: Collection<String>, state: ServerState):
         cloudLimit = settings.maxOfOrNull { it.cloudLimit } ?: DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT,
         saveCooldownSeconds = settings.minOfOrNull { it.saveCooldownSeconds } ?: DEFAULT_USER_CLOUD_COOLDOWN_SECONDS,
         loadCooldownSeconds = settings.minOfOrNull { it.loadCooldownSeconds } ?: DEFAULT_USER_CLOUD_COOLDOWN_SECONDS,
+        gifLimitBytes = settings.mapNotNull { it.gifLimitBytes }.maxOrNull() ?: 0L,
+        gifMaxConfigs = settings.mapNotNull { it.gifMaxConfigs }.maxOrNull() ?: 0,
+        canChangeGradient = settings.any { it.canChangeGradient },
+        canResetHwid = settings.any { it.canResetHwid },
+        hwidResetCount = settings.maxOfOrNull { it.hwidResetCount } ?: 0,
     )
 }
 
 private fun defaultRoleSettings(role: String): RoleSettingsRecord {
     return when (role) {
-        "OWNER", "ADMIN" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0)
-        "SPONSOR" -> RoleSettingsRecord(role, SPONSOR_CLOUD_CONFIGS_PER_ACCOUNT, 5, 5)
-        "QA" -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS)
-        else -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS)
+        "OWNER" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0, "linear-gradient(90deg, #9932CC, #DA70D6)", gifLimitBytes = 30L * 1024 * 1024, gifMaxConfigs = 30, displayName = "Owner")
+        "ADMIN" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0, "linear-gradient(90deg, #FF4444, #FF6B6B)", displayName = "Admin")
+        "MODERATOR" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0, "linear-gradient(90deg, #3BA55D, #57F287)", displayName = "Moderator")
+        "HELPER" -> RoleSettingsRecord(role, STAFF_CLOUD_CONFIGS_PER_ACCOUNT, 0, 0, "linear-gradient(90deg, #5865F2, #7289DA)", displayName = "Helper")
+        "SPONSOR" -> RoleSettingsRecord(role, 12, 5, 5, "linear-gradient(90deg, #38BDF8, #7DD3FC)", nickGradient = "linear-gradient(90deg, #80FF97, #6BB7FF)", iconFile = "role_sponsor", gifLimitBytes = 5L * 1024 * 1024, gifMaxConfigs = 3, displayName = "Sponsor")
+        "SPONSOR_PLUS" -> RoleSettingsRecord(role, 25, 5, 5, "linear-gradient(90deg, #6BB7FF, #FFD700)", nickGradient = "linear-gradient(90deg, #A217FF, #2C37FF)", iconFile = "role_sponsor", canChangeGradient = true, gifLimitBytes = 10L * 1024 * 1024, gifMaxConfigs = 6, displayName = "Sponsor [+]")
+        "SPONSOR_PLUS_PLUS" -> RoleSettingsRecord(role, 50, 5, 5, "linear-gradient(90deg, #9932CC, #DA70D6)", nickGradient = "linear-gradient(90deg, #FFD700, #FFA500)", iconFile = "role_sponsor", canChangeGradient = true, canResetHwid = true, hwidResetCount = -1, gifLimitBytes = 30L * 1024 * 1024, gifMaxConfigs = 20, displayName = "Sponsor [++]")
+        "QA" -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, "linear-gradient(90deg, #00CED1, #20B2AA)", displayName = "QA")
+        else -> RoleSettingsRecord(role, DEFAULT_CLOUD_CONFIGS_PER_ACCOUNT, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, DEFAULT_USER_CLOUD_COOLDOWN_SECONDS, "linear-gradient(90deg, #888888, #BBBBBB)", displayName = role.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() })
     }
 }
 
@@ -1684,16 +2140,46 @@ private fun List<AccountRoleLinkRecord>.exclusiveActiveLinks(): List<AccountRole
 
 private fun roleIcon(role: String, state: ServerState): String {
     if (role == "USER") return "role_user.png"
-    return if (state.roleIconDir.resolve("$role.png").exists()) {
-        "/api/role-icons/$role.png"
+    val settings = state.roleSettings.find(role)
+    val iconRole = settings?.iconFile ?: role
+    return if (state.roleIconDir.resolve("$iconRole.png").exists()) {
+        "/api/role-icons/$iconRole.png"
     } else {
         when (role) {
             "OWNER" -> "role_owner.png"
             "ADMIN" -> "role_admin.png"
+            "MODERATOR" -> "role_moderator.png"
+            "HELPER" -> "role_helper.png"
             "QA" -> "role_qa.png"
             "SPONSOR" -> "role_sponsor.png"
+            "SPONSOR_PLUS" -> "role_sponsor.png"
+            "SPONSOR_PLUS_PLUS" -> "role_sponsor.png"
             else -> "role_custom.png"
         }
+    }
+}
+
+private fun roleGradient(role: String, state: ServerState): String {
+    return state.roleSettings.find(role)?.textGradient ?: defaultRoleSettings(role).textGradient ?: ""
+}
+
+private fun roleNickGradient(role: String, state: ServerState): String {
+    return state.roleSettings.find(role)?.nickGradient ?: ""
+}
+
+private fun roleDisplayName(role: String, state: ServerState): String {
+    return state.roleSettings.find(role)?.displayName ?: when (role) {
+        "OWNER" -> "Owner"
+        "ADMIN" -> "Admin"
+        "MODERATOR" -> "Moderator"
+        "HELPER" -> "Helper"
+        "QA" -> "QA"
+        "SPONSOR" -> "Sponsor"
+        "SPONSOR_PLUS" -> "Sponsor [+]"
+        "SPONSOR_PLUS_PLUS" -> "Sponsor [++]"
+        "VIP" -> "VIP"
+        "USER" -> "User"
+        else -> role.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
     }
 }
 
@@ -1840,6 +2326,74 @@ private fun findJsonStringEnd(value: String, start: Int): Int? {
     return null
 }
 
+private fun jsonInt(json: String, name: String): Int? {
+    val key = """"$name"""
+    var searchFrom = 0
+    while (true) {
+        val keyIndex = json.indexOf(key, searchFrom)
+        if (keyIndex < 0) return null
+        var index = keyIndex + key.length
+        while (index < json.length && json[index].isWhitespace()) index++
+        if (index >= json.length || json[index] != ':') {
+            searchFrom = keyIndex + key.length
+            continue
+        }
+        index++
+        while (index < json.length && json[index].isWhitespace()) index++
+        val start = index
+        if (start < json.length && json[start] == '-') index++
+        while (index < json.length && json[index] in '0'..'9') index++
+        if (start == index) return null
+        return json.substring(start, index).toIntOrNull()
+    }
+}
+
+private fun jsonObjectString(json: String, name: String): String? {
+    val key = """$name"""
+    var searchFrom = 0
+    while (true) {
+        val keyIndex = json.indexOf(key, searchFrom)
+        if (keyIndex < 0) return null
+        var index = keyIndex + key.length
+        while (index < json.length && json[index].isWhitespace()) index++
+        if (index >= json.length || json[index] != ':') {
+            searchFrom = keyIndex + key.length
+            continue
+        }
+        index++
+        while (index < json.length && json[index].isWhitespace()) index++
+        if (index >= json.length || json[index] != '{') return null
+        val start = index
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in start until json.length) {
+            val c = json[i]
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                } else if (c == '\\') {
+                    escaped = true
+                } else if (c == '"') {
+                    inString = false
+                }
+                continue
+            }
+            when (c) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        return json.substring(start, i + 1)
+                    }
+                }
+            }
+        }
+        return null
+    }
+}
+
 private fun text(exchange: HttpExchange, code: Int, body: String) {
     exchange.responseHeaders.set("Content-Type", "text/plain; charset=utf-8")
     write(exchange, code, body)
@@ -1883,3 +2437,4 @@ private fun String.jsonUnescape(): String {
 private fun String.tsv(): String = replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
 private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
+
