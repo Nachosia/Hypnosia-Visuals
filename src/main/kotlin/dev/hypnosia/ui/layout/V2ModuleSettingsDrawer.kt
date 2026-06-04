@@ -1802,13 +1802,14 @@ class V2ModuleSettingsDrawer(
 
             if (fileName.equals(selected, ignoreCase = true) && entry != null) {
                 val sy = rowY + 48.0f
-                val scaleNorm = (entry.scale - 0.5f) / 2.5f
+                val scaleVal = if (entry.scale.isFinite()) entry.scale.coerceIn(0.5f, 3.0f) else 1.0f
+                val scaleNorm = (scaleVal - 0.5f) / 2.5f
                 drawValueSliderRow(
                     context = context,
                     x = bounds.x + 11.0f,
                     y = sy,
                     label = "Scale",
-                    valueText = String.format("%.1fx", entry.scale),
+                    valueText = String.format("%.1fx", scaleVal),
                     value = scaleNorm.coerceIn(0.0f, 1.0f),
                 )
                 val chromaLabel = if (entry.chromaKeyColor != null) "Chroma ON" else "Chroma OFF"
