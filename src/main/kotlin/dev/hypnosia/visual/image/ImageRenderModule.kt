@@ -33,6 +33,9 @@ object ImageRenderModule {
     /** Какой entry сейчас редактируется в V2 GUI */
     var selectedEntryPath: String? = null
 
+    /** Высота открытого drawer'а настроек Images — для сдвига HUD-картинок */
+    var hudOffsetY: Float = 0.0f
+
     /** Drag-and-drop state */
     var draggedEntryPath: String? = null
     private var dragOffsetX = 0f
@@ -302,7 +305,8 @@ object ImageRenderModule {
         if (entries.isEmpty()) return
 
         val client = MinecraftClient.getInstance()
-        if (client.currentScreen != null) return
+        val screen = client.currentScreen
+        if (screen != null && hudOffsetY < 1.0f) return
 
         val fixedScale = 1.0f / client.window.scaleFactor.toFloat().coerceAtLeast(1.0f)
 
@@ -310,13 +314,14 @@ object ImageRenderModule {
         context.matrices.scale(fixedScale, fixedScale)
 
         for (entry in entries) {
+            val y = entry.y + hudOffsetY
             when {
                 entry.isPng -> {
                     val image = staticCache[entry.name] ?: continue
                     val aspect = if (image.height > 0) image.width.toFloat() / image.height.toFloat() else 1f
                     val maxWidth = 200f * entry.scale
                     val h = maxWidth / aspect
-                    drawImage(context, image.identifier, entry.x, entry.y, maxWidth, h, entry.rounded)
+                    drawImage(context, image.identifier, entry.x, y, maxWidth, h, entry.rounded)
                 }
                 entry.isGif -> {
                     val gif = gifCache[entry.name] ?: continue
@@ -324,7 +329,7 @@ object ImageRenderModule {
                     val aspect = if (gif.height > 0) gif.width.toFloat() / gif.height.toFloat() else 1f
                     val maxWidth = 200f * entry.scale
                     val h = maxWidth / aspect
-                    drawImage(context, frameId, entry.x, entry.y, maxWidth, h, entry.rounded)
+                    drawImage(context, frameId, entry.x, y, maxWidth, h, entry.rounded)
                 }
             }
         }

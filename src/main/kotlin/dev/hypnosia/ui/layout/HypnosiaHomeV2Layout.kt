@@ -16,6 +16,7 @@ import dev.hypnosia.other.FriendsManager
 import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.visual.AspectRatioSettings
 import dev.hypnosia.visual.image.ImageRenderConfig
+import dev.hypnosia.visual.image.ImageRenderModule
 import dev.hypnosia.world.WorldVisualSettings
 import dev.hypnosia.license.HypnosiaPaths
 import java.nio.charset.StandardCharsets
@@ -204,31 +205,33 @@ object HypnosiaHomeV2Layout {
             renderSearch(context)
             renderMain(context)
             renderBottomBar(context)
-            selectedSettingsModuleId?.let {
-                val client = MinecraftClient.getInstance()
-                val window = client.window
-                val guiScale = window.scaleFactor.toFloat().coerceAtLeast(1.0f)
-                val scale = 1.0f / guiScale
-                val screenW = window.scaledWidth / scale
-                val drawerPreferredX = bounds.x + MAIN_X + MAIN_WIDTH + 16.0f
-                val drawerFitsRight = drawerPreferredX + V2ModuleSettingsDrawer.WIDTH <= screenW
-                val drawerPreferredLeftX = bounds.x + MAIN_X - V2ModuleSettingsDrawer.WIDTH - 16.0f
-                val drawerFitsLeft = drawerPreferredLeftX >= 0.0f
-                val drawerX = when {
-                    drawerFitsRight -> drawerPreferredX
-                    drawerFitsLeft -> drawerPreferredLeftX
-                    else -> bounds.x + MAIN_X + (MAIN_WIDTH - V2ModuleSettingsDrawer.WIDTH) * 0.5f
-                }
-                val maxDrawerY = bounds.y + NAV_Y - V2ModuleSettingsDrawer.HEIGHT - 8.0f
-                val drawerY = (bounds.y + MAIN_Y).coerceAtMost(maxDrawerY)
-                settingsDrawer.bounds = Rect(drawerX, drawerY, V2ModuleSettingsDrawer.WIDTH, V2ModuleSettingsDrawer.HEIGHT)
-                settingsDrawer.render(context)
+            val client = MinecraftClient.getInstance()
+            val window = client.window
+            val guiScale = window.scaleFactor.toFloat().coerceAtLeast(1.0f)
+            val scale = 1.0f / guiScale
+            val screenW = window.scaledWidth / scale
+            val drawerPreferredX = bounds.x + MAIN_X + MAIN_WIDTH + 16.0f
+            val drawerFitsRight = drawerPreferredX + V2ModuleSettingsDrawer.WIDTH <= screenW
+            val drawerPreferredLeftX = bounds.x + MAIN_X - V2ModuleSettingsDrawer.WIDTH - 16.0f
+            val drawerFitsLeft = drawerPreferredLeftX >= 0.0f
+            val drawerX = when {
+                drawerFitsRight -> drawerPreferredX
+                drawerFitsLeft -> drawerPreferredLeftX
+                else -> bounds.x + MAIN_X + (MAIN_WIDTH - V2ModuleSettingsDrawer.WIDTH) * 0.5f
             }
+            val maxDrawerY = bounds.y + NAV_Y - V2ModuleSettingsDrawer.HEIGHT - 8.0f
+            val drawerY = (bounds.y + MAIN_Y).coerceAtMost(maxDrawerY)
+            settingsDrawer.bounds = Rect(drawerX, drawerY, V2ModuleSettingsDrawer.WIDTH, V2ModuleSettingsDrawer.HEIGHT)
+            val drawerHeight = settingsDrawer.render(context)
+            if (drawerHeight < 0.5f && selectedSettingsModuleId != null) {
+                selectedSettingsModuleId = null
+            }
+            ImageRenderModule.hudOffsetY = if (selectedSettingsModuleId == "client.images") drawerHeight else 0.0f
         }
 
         override fun mouseClicked(mouseX: Float, mouseY: Float, button: Int): Boolean {
             if (button == 0) {
-                selectedSettingsModuleId?.let {
+                if (settingsDrawer.bounds.height > 1.0f) {
                     if (settingsDrawer.mouseClicked(mouseX, mouseY, button)) return true
                 }
                 if (isModulePage()) {
@@ -392,28 +395,28 @@ object HypnosiaHomeV2Layout {
         }
 
         override fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean {
-            selectedSettingsModuleId?.let {
+            if (settingsDrawer.bounds.height > 1.0f) {
                 if (settingsDrawer.mouseReleased(mouseX, mouseY, button)) return true
             }
             return false
         }
 
         override fun mouseDragged(mouseX: Float, mouseY: Float, button: Int, deltaX: Float, deltaY: Float): Boolean {
-            selectedSettingsModuleId?.let {
+            if (settingsDrawer.bounds.height > 1.0f) {
                 if (settingsDrawer.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) return true
             }
             return false
         }
 
         override fun mouseScrolled(mouseX: Float, mouseY: Float, horizontalAmount: Float, verticalAmount: Float): Boolean {
-            selectedSettingsModuleId?.let {
+            if (settingsDrawer.bounds.height > 1.0f) {
                 if (settingsDrawer.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) return true
             }
             return false
         }
 
         override fun keyPressed(keyCode: Int, scanCode: Int, modifiers: Int): Boolean {
-            selectedSettingsModuleId?.let {
+            if (settingsDrawer.bounds.height > 1.0f) {
                 if (settingsDrawer.keyPressed(keyCode, scanCode, modifiers)) return true
             }
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE && selectedSettingsModuleId != null) {
@@ -504,7 +507,7 @@ object HypnosiaHomeV2Layout {
         }
 
         override fun charTyped(chr: Char, modifiers: Int): Boolean {
-            selectedSettingsModuleId?.let {
+            if (settingsDrawer.bounds.height > 1.0f) {
                 if (settingsDrawer.charTyped(chr, modifiers)) return true
             }
             if (chr.code < 32 || chr == '\u007F') return false
