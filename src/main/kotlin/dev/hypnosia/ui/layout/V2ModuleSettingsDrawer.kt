@@ -57,6 +57,7 @@ class V2ModuleSettingsDrawer(
     private var imageColorPickerPath: String? = null
     private val recentColors = mutableListOf<Int>()
     private val heightSpring = SpringFloat(0.0f, stiffness = 400.0f, damping = 28.0f)
+    private var lastTitle = "Icons"
 
     fun preRender(): Float {
         val hasModule = module() != null
@@ -70,7 +71,8 @@ class V2ModuleSettingsDrawer(
         val currentHeight = bounds.height
         if (currentHeight < 1.0f) return 0.0f
 
-        val title = module()?.title ?: "Icons"
+        module()?.title?.let { lastTitle = it }
+        val title = lastTitle
         syncScrollState()
         HypnosiaRenderUtils.drawThemedBox(
             context = context,
@@ -1733,13 +1735,9 @@ class V2ModuleSettingsDrawer(
         val files = imageFilesInFolder()
         val selected = ImageRenderModule.selectedEntryPath
         val selectedIndex = files.indexOfFirst { it.equals(selected, ignoreCase = true) }
-        val listBottom = 219.0f + files.size * 48.0f + 16.0f
-        return if (selectedIndex >= 0) {
-            val settingsTop = 219.0f + selectedIndex * 48.0f + 48.0f
-            (settingsTop + 184.0f).coerceAtLeast(listBottom)
-        } else {
-            listBottom
-        }
+        val extra = if (selectedIndex >= 0) 144.0f else 0.0f
+        val listBottom = 219.0f + files.size * 48.0f + extra + 16.0f
+        return listBottom
     }
 
     private fun renderImageSettings(context: DrawContext) {

@@ -17,11 +17,13 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
     override fun shouldPause(): Boolean = false
 
     override fun removed() {
+        ImageRenderModule.isV2GuiOpen = false
         rootLayout.onScreenClose()
         super.removed()
     }
 
     override fun close() {
+        ImageRenderModule.isV2GuiOpen = false
         rootLayout.onScreenClose()
         super.close()
     }
@@ -53,7 +55,6 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
         ImageRenderModule.renderOverlay(context, if (HypnosiaHomeV2Layout.selectedSettingsModuleId == "client.images") drawerHeight else 0.0f)
 
         rootLayout.render(context)
-        ImageRenderModule.isV2GuiOpen = false
     }
 
     override fun mouseClicked(click: Click, doubled: Boolean): Boolean {
