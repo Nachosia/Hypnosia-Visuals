@@ -222,11 +222,12 @@ object HypnosiaHomeV2Layout {
             val maxDrawerY = bounds.y + NAV_Y - V2ModuleSettingsDrawer.HEIGHT - 8.0f
             val drawerY = (bounds.y + MAIN_Y).coerceAtMost(maxDrawerY)
             settingsDrawer.bounds = Rect(drawerX, drawerY, V2ModuleSettingsDrawer.WIDTH, V2ModuleSettingsDrawer.HEIGHT)
-            val drawerHeight = settingsDrawer.render(context)
+            val drawerHeight = settingsDrawer.preRender()
             if (drawerHeight < 0.5f && selectedSettingsModuleId != null) {
                 selectedSettingsModuleId = null
             }
-            ImageRenderModule.hudOffsetY = if (selectedSettingsModuleId == "client.images") drawerHeight else 0.0f
+            ImageRenderModule.renderOverlay(context, if (selectedSettingsModuleId == "client.images") drawerHeight else 0.0f)
+            settingsDrawer.render(context)
         }
 
         override fun mouseClicked(mouseX: Float, mouseY: Float, button: Int): Boolean {

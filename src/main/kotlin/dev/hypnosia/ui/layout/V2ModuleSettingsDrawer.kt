@@ -58,11 +58,16 @@ class V2ModuleSettingsDrawer(
     private val recentColors = mutableListOf<Int>()
     private val heightSpring = SpringFloat(0.0f, stiffness = 400.0f, damping = 28.0f)
 
-    fun render(context: DrawContext): Float {
+    fun preRender(): Float {
         val hasModule = module() != null
         heightSpring.target = if (hasModule) HEIGHT else 0.0f
         val currentHeight = heightSpring.update(UiInputState.frameSeconds).coerceIn(0.0f, HEIGHT)
         bounds = Rect(bounds.x, bounds.y, bounds.width, currentHeight)
+        return currentHeight
+    }
+
+    fun render(context: DrawContext): Float {
+        val currentHeight = bounds.height
         if (currentHeight < 1.0f) return 0.0f
 
         val title = module()?.title ?: "Icons"

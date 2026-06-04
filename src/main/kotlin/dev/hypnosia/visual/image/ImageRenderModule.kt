@@ -33,9 +33,6 @@ object ImageRenderModule {
     /** Какой entry сейчас редактируется в V2 GUI */
     var selectedEntryPath: String? = null
 
-    /** Высота открытого drawer'а настроек Images — для сдвига HUD-картинок */
-    var hudOffsetY: Float = 0.0f
-
     /** Drag-and-drop state */
     var draggedEntryPath: String? = null
     private var dragOffsetX = 0f
@@ -72,6 +69,7 @@ object ImageRenderModule {
     }
 
     private fun renderHud(context: DrawContext, _tickCounter: RenderTickCounter) {
+        if (MinecraftClient.getInstance().currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         renderOverlay(context)
     }
 
@@ -300,21 +298,18 @@ object ImageRenderModule {
     }
 
     /** Рендер всех включённых изображений. Вызывай из нужного места (HUD / GUI). */
-    fun renderOverlay(context: DrawContext) {
+    fun renderOverlay(context: DrawContext, offsetY: Float = 0.0f) {
         val entries = ImageRenderConfig.enabledEntries()
         if (entries.isEmpty()) return
 
         val client = MinecraftClient.getInstance()
-        val screen = client.currentScreen
-        if (screen != null && hudOffsetY < 1.0f) return
-
         val fixedScale = 1.0f / client.window.scaleFactor.toFloat().coerceAtLeast(1.0f)
 
         context.matrices.pushMatrix()
         context.matrices.scale(fixedScale, fixedScale)
 
         for (entry in entries) {
-            val y = entry.y + hudOffsetY
+            val y = entry.y + offsetY
             when {
                 entry.isPng -> {
                     val image = staticCache[entry.name] ?: continue
