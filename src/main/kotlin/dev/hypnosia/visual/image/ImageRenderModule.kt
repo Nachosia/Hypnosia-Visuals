@@ -33,6 +33,9 @@ object ImageRenderModule {
     /** Какой entry сейчас редактируется в V2 GUI */
     var selectedEntryPath: String? = null
 
+    /** true когда открыт HypnosiaHomeV2Screen — HUD-рендер картинок отключается */
+    var isV2GuiOpen = false
+
     /** Drag-and-drop state */
     var draggedEntryPath: String? = null
     private var dragOffsetX = 0f
@@ -69,7 +72,7 @@ object ImageRenderModule {
     }
 
     private fun renderHud(context: DrawContext, _tickCounter: RenderTickCounter) {
-        if (MinecraftClient.getInstance().currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
+        if (isV2GuiOpen) return
         renderOverlay(context)
     }
 

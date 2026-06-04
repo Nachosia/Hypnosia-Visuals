@@ -2,6 +2,7 @@ package dev.hypnosia.ui
 
 import dev.hypnosia.ui.layout.HypnosiaHomeV2Layout
 import dev.hypnosia.ui.layout.UiInputState
+import dev.hypnosia.visual.image.ImageRenderModule
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.Click
 import net.minecraft.client.gui.DrawContext
@@ -13,28 +14,15 @@ import net.minecraft.text.Text
 class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
     private val rootLayout = HypnosiaHomeV2Layout.create()
     private var lastFrameNanos = 0L
-    private var previousHudHidden = false
-    private var hudHiddenCaptured = false
-
     override fun shouldPause(): Boolean = false
 
-    override fun init() {
-        super.init()
-        val options = MinecraftClient.getInstance().options
-        if (!hudHiddenCaptured) {
-            previousHudHidden = options.hudHidden
-            hudHiddenCaptured = true
-        }
-        options.hudHidden = true
-    }
-
     override fun removed() {
-        restoreHudHidden()
+        rootLayout.onScreenClose()
         super.removed()
     }
 
     override fun close() {
-        restoreHudHidden()
+        rootLayout.onScreenClose()
         super.close()
     }
 
@@ -43,6 +31,7 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
     }
 
     override fun render(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
+        ImageRenderModule.isV2GuiOpen = true
         renderBackground(context, mouseX, mouseY, delta)
         val client = MinecraftClient.getInstance()
         val now = System.nanoTime()
@@ -58,7 +47,13 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
         UiInputState.update(localMouseX, localMouseY, frameSeconds)
 
         dev.hypnosia.ui.render.HypnosiaRenderUtils.captureThemeBackdrop(context)
+
+        HypnosiaHomeV2Layout.updateDrawer()
+        val drawerHeight = HypnosiaHomeV2Layout.drawerHeight
+        ImageRenderModule.renderOverlay(context, if (HypnosiaHomeV2Layout.selectedSettingsModuleId == "client.images") drawerHeight else 0.0f)
+
         rootLayout.render(context)
+        ImageRenderModule.isV2GuiOpen = false
     }
 
     override fun mouseClicked(click: Click, doubled: Boolean): Boolean {
@@ -88,10 +83,5 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
         return text.any { rootLayout.charTyped(it, input.modifiers) } || super.charTyped(input)
     }
 
-    private fun restoreHudHidden() {
-        if (hudHiddenCaptured) {
-            MinecraftClient.getInstance().options.hudHidden = previousHudHidden
-            hudHiddenCaptured = false
-        }
-    }
+
 }

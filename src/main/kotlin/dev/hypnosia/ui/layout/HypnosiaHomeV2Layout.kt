@@ -65,18 +65,26 @@ object HypnosiaHomeV2Layout {
 
     private var selectedNavId = "hi"
 
+    private lateinit var homeNode: HomeV2Node
+
+    fun updateDrawer() = homeNode.updateDrawer()
+    val drawerHeight: Float get() = homeNode.drawerHeight
+    val selectedSettingsModuleId: String? get() = homeNode.selectedSettingsModuleId
+
     fun create(): FigmaRoot {
         HypnosiaConfigProfiles.bootstrap()
+        val node = HomeV2Node()
+        homeNode = node
         return FigmaRoot(
             designWidth = WINDOW_WIDTH,
             designHeight = WINDOW_HEIGHT,
-            child = HomeV2Node(),
+            child = node,
             anchor = RootAnchor.Center,
             renderScale = 1.0f,
         )
     }
 
-    private class HomeV2Node : BaseUiNode(
+    internal class HomeV2Node : BaseUiNode(
         LayoutSpec(SizeMode.Fixed(WINDOW_WIDTH), SizeMode.Fixed(WINDOW_HEIGHT)),
     ) {
         private val navAnimations = NAV_ITEMS.associate { it.id to NavAnimation() }
@@ -113,7 +121,8 @@ object HypnosiaHomeV2Layout {
         private val moduleLeftButtonRects = mutableMapOf<String, Rect>()
         private val moduleRightButtonRects = mutableMapOf<String, Rect>()
 
-        private var selectedSettingsModuleId: String? = null
+        var selectedSettingsModuleId: String? = null
+            private set
         private val settingsDrawer = V2ModuleSettingsDrawer(
             module = {
                 val id = selectedSettingsModuleId
@@ -201,10 +210,10 @@ object HypnosiaHomeV2Layout {
 
         override fun measure(constraints: Constraints): Size = constraints.constrain(Size(WINDOW_WIDTH, WINDOW_HEIGHT))
 
-        override fun render(context: DrawContext) {
-            renderSearch(context)
-            renderMain(context)
-            renderBottomBar(context)
+        var drawerHeight: Float = 0.0f
+            private set
+
+        fun updateDrawer() {
             val client = MinecraftClient.getInstance()
             val window = client.window
             val guiScale = window.scaleFactor.toFloat().coerceAtLeast(1.0f)
@@ -222,11 +231,16 @@ object HypnosiaHomeV2Layout {
             val maxDrawerY = bounds.y + NAV_Y - V2ModuleSettingsDrawer.HEIGHT - 8.0f
             val drawerY = (bounds.y + MAIN_Y).coerceAtMost(maxDrawerY)
             settingsDrawer.bounds = Rect(drawerX, drawerY, V2ModuleSettingsDrawer.WIDTH, V2ModuleSettingsDrawer.HEIGHT)
-            val drawerHeight = settingsDrawer.preRender()
+            drawerHeight = settingsDrawer.preRender()
             if (drawerHeight < 0.5f && selectedSettingsModuleId != null) {
                 selectedSettingsModuleId = null
             }
-            ImageRenderModule.renderOverlay(context, if (selectedSettingsModuleId == "client.images") drawerHeight else 0.0f)
+        }
+
+        override fun render(context: DrawContext) {
+            renderSearch(context)
+            renderMain(context)
+            renderBottomBar(context)
             settingsDrawer.render(context)
         }
 
