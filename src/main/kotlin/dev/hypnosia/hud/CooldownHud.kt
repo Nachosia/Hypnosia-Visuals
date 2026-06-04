@@ -39,6 +39,7 @@ object CooldownHud {
 
     private fun render(context: DrawContext, tickCounter: RenderTickCounter) {
         val client = MinecraftClient.getInstance()
+        if (client.currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         if (client.player == null || !HudModuleSettings.isEnabled(HudModuleSettings.Module.COOLDOWNS)) return
         val state = HudModuleSettings.state(HudModuleSettings.Module.COOLDOWNS)
         val rows = activeCooldowns(client)

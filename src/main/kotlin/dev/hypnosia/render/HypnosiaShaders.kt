@@ -105,6 +105,22 @@ object HypnosiaShaders {
             .build(),
     )
 
+    val HQ_TEXT_GRADIENT: RenderPipeline = RenderPipelines.register(
+        RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
+            .withLocation(Identifier.of(HypnosiaClient.MOD_ID, "pipeline/hq_text_gradient"))
+            .withVertexShader(Identifier.of(HypnosiaClient.MOD_ID, "core/hq_text"))
+            .withFragmentShader(Identifier.of(HypnosiaClient.MOD_ID, "core/hq_text_gradient"))
+            .withSampler("Sampler0")
+            .withUniform("HypnosiaTextFade", UniformType.UNIFORM_BUFFER)
+            .withUniform("HypnosiaGradient", UniformType.UNIFORM_BUFFER)
+            .withVertexFormat(VertexFormats.POSITION_TEXTURE_COLOR, VertexFormat.DrawMode.QUADS)
+            .withBlend(BlendFunction.TRANSLUCENT)
+            .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
+            .withDepthWrite(false)
+            .withCull(false)
+            .build(),
+    )
+
     fun initialize() {
         // Force object initialization during the Fabric client entrypoint.
         // Fabric 1.21.11's local rendering API exposes RenderPipeline registration;

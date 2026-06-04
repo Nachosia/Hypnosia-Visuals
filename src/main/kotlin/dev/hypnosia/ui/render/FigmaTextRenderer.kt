@@ -11,6 +11,8 @@ import net.minecraft.util.Identifier
 import kotlin.math.round
 
 object FigmaTextRenderer {
+    private const val WHITE = 0xFFFFFFFF.toInt()
+
     enum class Font(val id: Identifier, val baseSize: Float) {
         Main(Identifier.of(HypnosiaClient.MOD_ID, "main"), 12.0f),
         Title(Identifier.of(HypnosiaClient.MOD_ID, "title"), 12.0f),
@@ -164,6 +166,41 @@ object FigmaTextRenderer {
         draw(context, text, drawXRaw, drawYRaw, color, style, fade)
     }
 
+    fun drawGradientInBox(
+        context: DrawContext,
+        text: String,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        color: Int,
+        style: FigmaTextStyle,
+        gradientColor1: Int,
+        gradientColor2: Int,
+        time: Float,
+        horizontalAlign: HorizontalAlign = HorizontalAlign.Left,
+        verticalAlign: VerticalAlign = VerticalAlign.Top,
+        fade: HighQualityTextRenderer.TextFade? = null,
+        fallbackColor: Int = color,
+    ) {
+        val textWidth = width(text, style)
+        val drawXRaw = when (horizontalAlign) {
+            HorizontalAlign.Left -> x
+            HorizontalAlign.Center -> x + (width - textWidth) * 0.5f
+            HorizontalAlign.Right -> x + width - textWidth
+        }
+
+        val opticalHeight = style.size
+        val awtCorrection = opticalHeight * 0.12f
+
+        val drawYRaw = when (verticalAlign) {
+            VerticalAlign.Top -> y
+            VerticalAlign.Center -> y + (height - opticalHeight) * 0.5f - awtCorrection
+            VerticalAlign.Bottom -> y + height - opticalHeight - awtCorrection
+        }
+        drawGradientRaw(context, text, drawXRaw, drawYRaw, color, style, gradientColor1, gradientColor2, time, fade, fallbackColor)
+    }
+
     fun width(text: String, size: Float, font: Font = Font.Main): Float {
         val effectiveFont = ThemeSettings.resolveFont(font)
         HighQualityTextRenderer.width(
@@ -216,6 +253,45 @@ object FigmaTextRenderer {
         text.forEach { char ->
             val glyph = char.toString()
             drawMinecraftFont(context, glyph, snapHalf(cursorX), drawY, style.size, color, style.font)
+            cursorX += width(glyph, style.size, style.font) + style.letterSpacing
+        }
+    }
+
+    private fun drawGradientRaw(
+        context: DrawContext,
+        text: String,
+        x: Float,
+        y: Float,
+        color: Int,
+        style: FigmaTextStyle,
+        gradientColor1: Int,
+        gradientColor2: Int,
+        time: Float,
+        fade: HighQualityTextRenderer.TextFade? = null,
+        fallbackColor: Int = color,
+    ) {
+        if (text.isEmpty()) {
+            return
+        }
+
+        val drawX = snapHalf(x)
+        val drawY = snapHalf(y)
+
+        // Pass WHITE as vertex color so the shader gradient is not tinted/darkened
+        if (HighQualityTextRenderer.drawGradient(context, text, drawX, drawY, WHITE, style, gradientColor1, gradientColor2, time, fade)) {
+            return
+        }
+
+        // Fallback: regular text without gradient (Minecraft font does not support shader gradients)
+        if (style.letterSpacing == 0.0f) {
+            drawMinecraftFont(context, text, drawX, drawY, style.size, fallbackColor, style.font)
+            return
+        }
+
+        var cursorX = drawX
+        text.forEach { char ->
+            val glyph = char.toString()
+            drawMinecraftFont(context, glyph, snapHalf(cursorX), drawY, style.size, fallbackColor, style.font)
             cursorX += width(glyph, style.size, style.font) + style.letterSpacing
         }
     }

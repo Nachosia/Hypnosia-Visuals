@@ -40,6 +40,7 @@ object PotionsHud {
 
     private fun render(context: DrawContext, tickCounter: RenderTickCounter) {
         val client = MinecraftClient.getInstance()
+        if (client.currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         if (client.player == null || !HudModuleSettings.isEnabled(HudModuleSettings.Module.POTIONS)) return
         val state = HudModuleSettings.state(HudModuleSettings.Module.POTIONS)
         val rows = activeEffects(client)

@@ -1,5 +1,6 @@
 package dev.hypnosia.license
 
+import dev.hypnosia.crypto.FileEncryption
 import java.util.Properties
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -15,6 +16,7 @@ data class LicenseConfig(
 
         fun loadOrCreate(): LicenseConfig {
             val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
+            val keyBytes = FileEncryption.deriveKey(HardwareFingerprint.currentHash64())
 
             if (!configFile.exists()) {
                 configFile.parent.createDirectories()
@@ -23,7 +25,7 @@ data class LicenseConfig(
                 configFile.outputStream().use { output ->
                     defaults.store(
                         output,
-                        "Hypnosia license config. Put only your 32-character license key here. Server settings are not stored on the client.",
+                        "Hypnosia license config. Encrypted at rest.",
                     )
                 }
                 return LicenseConfig(licenseKey = null)
@@ -31,29 +33,41 @@ data class LicenseConfig(
 
             val properties = Properties()
             configFile.inputStream().use(properties::load)
+            var rawKey = properties.getProperty("license.key")?.trim() ?: ""
 
-            val key = properties.getProperty("license.key")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?.takeIf { licenseRegex.matches(it) }
-                ?.uppercase()
+            // Migrate plaintext key to encrypted on first read
+            if (rawKey.isNotBlank() && licenseRegex.matches(rawKey)) {
+                val encrypted = FileEncryption.encrypt(rawKey.uppercase(), keyBytes)
+                properties["license.key"] = encrypted
+                configFile.outputStream().use { output ->
+                    properties.store(output, "Hypnosia license config. Encrypted at rest.")
+                }
+                rawKey = encrypted
+            }
 
-            return LicenseConfig(
-                licenseKey = key,
-            )
+            val key = if (rawKey.isNotBlank() && !licenseRegex.matches(rawKey)) {
+                FileEncryption.decrypt(rawKey, keyBytes)
+                    ?.takeIf { licenseRegex.matches(it) }
+                    ?.uppercase()
+            } else {
+                rawKey.takeIf { licenseRegex.matches(it) }?.uppercase()
+            }
+
+            return LicenseConfig(licenseKey = key)
         }
 
         fun saveLicenseKey(licenseKey: String) {
             require(licenseRegex.matches(licenseKey)) { "Invalid license key" }
             val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
             configFile.parent.createDirectories()
+            val keyBytes = FileEncryption.deriveKey(HardwareFingerprint.currentHash64())
 
             val properties = Properties()
-            properties["license.key"] = licenseKey.uppercase()
+            properties["license.key"] = FileEncryption.encrypt(licenseKey.uppercase(), keyBytes)
             configFile.outputStream().use { output ->
                 properties.store(
                     output,
-                    "Hypnosia license config. Put only your 32-character license key here. Server settings are not stored on the client.",
+                    "Hypnosia license config. Encrypted at rest.",
                 )
             }
         }

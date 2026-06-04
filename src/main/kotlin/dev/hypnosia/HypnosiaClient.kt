@@ -11,11 +11,17 @@ import dev.hypnosia.hud.PlayerInfoHud
 import dev.hypnosia.hud.PotionsHud
 import dev.hypnosia.hud.TargetHud
 import dev.hypnosia.hud.WatermarkHud
+import dev.hypnosia.visual.image.ImageRenderModule
+import dev.hypnosia.media.GlobalMediaTracker
 import dev.hypnosia.license.ActKeyCommand
 import dev.hypnosia.license.AccountManager
+import dev.hypnosia.license.HardwareFingerprint
+import dev.hypnosia.license.LinkCommand
+import dev.hypnosia.license.LogoutCommand
+import dev.hypnosia.license.SessionManager
 import dev.hypnosia.other.DiscordRpcManager
+import dev.hypnosia.playtime.ActivityTracker
 import dev.hypnosia.ui.HypnosiaHomeV2Screen
-import dev.hypnosia.ui.HypnosiaMenuScreen
 import dev.hypnosia.ui.profile.HypnosiaPlaytime
 import dev.hypnosia.ui.render.HighQualityTextRenderer
 import dev.hypnosia.world.WorldVisualSettings
@@ -36,7 +42,6 @@ object HypnosiaClient : ClientModInitializer {
     private val logger = LoggerFactory.getLogger(MOD_ID)
     private const val SERVICE_WARNING_DELAY_MS = 5000L
 
-    private lateinit var openMenuKey: KeyBinding
     private lateinit var openHomeV2Key: KeyBinding
     @Volatile private var serviceCheckStartedAtMs = 0L
     @Volatile private var serviceCheckAvailable = false
@@ -46,6 +51,8 @@ object HypnosiaClient : ClientModInitializer {
         HypnosiaShaders.initialize()
         HypnosiaConfigProfiles.bootstrap()
         WatermarkHud.register()
+        ImageRenderModule.register()
+        GlobalMediaTracker.start()
         HudModulesHud.register()
         TargetHud.register()
         PlayerInfoHud.register()
@@ -54,7 +61,22 @@ object HypnosiaClient : ClientModInitializer {
         PotionsHud.register()
         HotKeyHud.register()
         ActKeyCommand.register()
+        LinkCommand.register()
+        LogoutCommand.register()
         HypnosiaPlaytime.recordLaunch()
+
+        // Shutdown hook for emergency flush (in case CLIENT_STOPPING doesn't fire)
+        Runtime.getRuntime().addShutdownHook(Thread {
+            println("[Hypnosia] Shutdown hook triggered, sending emergency flush")
+            if (ActivityTracker.activeMinutesAccumulated > 0 && SessionManager.hasActiveSession()) {
+                try {
+                    SessionManager.sendEmergencyFlush().get(5, java.util.concurrent.TimeUnit.SECONDS)
+                } catch (e: Exception) {
+                    println("[Hypnosia] Emergency flush failed or timed out: ${e.message}")
+                }
+            }
+        })
+
         ClientLifecycleEvents.CLIENT_STARTED.register {
             if (System.getProperty("hypnosia.prewarmText", "true").toBoolean()) {
                 runCatching { HighQualityTextRenderer.prewarmCommonAtlases() }
@@ -67,37 +89,43 @@ object HypnosiaClient : ClientModInitializer {
             logger.info("Hypnosia account session state: {}", state)
             if (state is dev.hypnosia.license.AccountState.Valid) {
                 AccountManager.markOnlineAsync(net.minecraft.client.MinecraftClient.getInstance().session.username)
+                val future = SessionManager.startSession(
+                    accountKey = state.session.accountKey,
+                    hwidHash = HardwareFingerprint.currentHash64(),
+                    accountId = state.session.accountId,
+                )
+                println("[Hypnosia] SessionManager.startSession called, future=$future")
             }
         }
 
         ClientLifecycleEvents.CLIENT_STOPPING.register {
-            WorldVisualSettings.restoreGamma(net.minecraft.client.MinecraftClient.getInstance())
+            val client = net.minecraft.client.MinecraftClient.getInstance()
+            WorldVisualSettings.restoreGamma(client)
             AccountManager.markOfflineAsync()
+            try {
+                SessionManager.endSession(flush = true).get(5, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (e: Exception) {
+                println("[Hypnosia] End session flush failed or timed out: ${e.message}")
+            }
             DiscordRpcManager.shutdown()
         }
 
         val hypnosiaKeyCategory = KeyBinding.Category.create(Identifier.of(MOD_ID, "hypnosia"))
 
-        openMenuKey = KeyBindingHelper.registerKeyBinding(
-            KeyBinding(
-                "key.hypnosia.open_menu",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_RIGHT_SHIFT,
-                hypnosiaKeyCategory,
-            ),
-        )
         openHomeV2Key = KeyBindingHelper.registerKeyBinding(
             KeyBinding(
                 "key.hypnosia.open_home_v2",
                 InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_APOSTROPHE,
+                GLFW.GLFW_KEY_RIGHT_SHIFT,
                 hypnosiaKeyCategory,
             ),
         )
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             HypnosiaPlaytime.tick(client)
+            ActivityTracker.tick(client)
             AccountManager.tickNotifications(client)
+            ImageRenderModule.tickDrag(client)
             HudModulesHud.tickDrag(client)
             TargetHud.tickDrag(client)
             PlayerInfoHud.tickDrag(client)
@@ -109,9 +137,6 @@ object HypnosiaClient : ClientModInitializer {
             ModuleHotkeys.tick(client)
             DiscordRpcManager.tick(client)
             tickServiceWarning(client)
-            while (openMenuKey.wasPressed()) {
-                client.setScreen(HypnosiaMenuScreen())
-            }
             while (openHomeV2Key.wasPressed()) {
                 client.setScreen(HypnosiaHomeV2Screen())
             }

@@ -14,6 +14,7 @@ import dev.hypnosia.config.ThemeSettings
 import dev.hypnosia.render.HypnosiaShaders
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gl.GpuSampler
+import net.minecraft.client.gl.RenderPipelines
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.render.BuiltBuffer
 import net.minecraft.client.render.BufferBuilder
@@ -601,6 +602,73 @@ object HypnosiaRenderUtils {
         )
     }
 
+    /**
+     * Draws a role icon using vanilla GUI_TEXTURED pipeline.
+     * This bypasses our SDF shader entirely, preserving original PNG colors with NEAREST filtering.
+     * Use ONLY for raster icons that should not be tinted/masked (e.g. downloaded role icons).
+     */
+    fun drawRoleIcon(
+        context: DrawContext,
+        identifier: Identifier,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+    ) {
+        val snappedX = round(x).toInt()
+        val snappedY = round(y).toInt()
+        val snappedW = max(1, round(width).toInt())
+        val snappedH = max(1, round(height).toInt())
+        context.drawTexture(
+            RenderPipelines.GUI_TEXTURED,
+            identifier,
+            snappedX,
+            snappedY,
+            0.0f,
+            0.0f,
+            snappedW,
+            snappedH,
+            snappedW,
+            snappedH,
+            0xFFFFFFFF.toInt(),
+        )
+    }
+
+    fun drawVanillaIcon(
+        context: DrawContext,
+        identifier: Identifier,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        tintColor: Int = 0xFFFFFFFF.toInt(),
+    ) {
+        val client = MinecraftClient.getInstance()
+        val hasResource = client.resourceManager.getResource(identifier).isPresent
+        val hasTexture = client.textureManager.getTexture(identifier) != null
+        if (!hasResource && !hasTexture) {
+            println("[Hypnosia] drawVanillaIcon MISSING: ${identifier}")
+            return
+        }
+        val snappedX = round(x).toInt()
+        val snappedY = round(y).toInt()
+        val snappedW = max(1, round(width).toInt())
+        val snappedH = max(1, round(height).toInt())
+        context.drawTexture(
+            RenderPipelines.GUI_TEXTURED,
+            identifier,
+            snappedX,
+            snappedY,
+            0.0f,
+            0.0f,
+            snappedW,
+            snappedH,
+            snappedW,
+            snappedH,
+            tintColor,
+        )
+    }
+
     fun drawIconTexture(
         context: DrawContext,
         identifier: Identifier,
@@ -611,7 +679,15 @@ object HypnosiaRenderUtils {
         tintColor: Int = 0xFFFFFFFF.toInt(),
         flushDeferredBeforeDraw: Boolean = true,
     ) {
-        if (IconSettings.shouldSkip(identifier)) return
+        if (IconSettings.shouldSkip(identifier)) {
+            println("[Hypnosia] drawIconTexture SKIP: ${identifier}")
+            return
+        }
+        val client = MinecraftClient.getInstance()
+        if (client.resourceManager.getResource(identifier).isEmpty) {
+            // silently skip missing icons to avoid log spam
+            return
+        }
         val themedTint = ThemeSettings.resolveIconTint(
             identifierPath = identifier.path,
             color = IconSettings.tint(identifier, tintColor),
@@ -651,7 +727,9 @@ object HypnosiaRenderUtils {
         // Figma-exported SVG icons must be converted to PNG assets before using
         // drawRoundedTexture; Minecraft's GUI texture pipeline does not upload SVG files.
         val client = MinecraftClient.getInstance()
-        if (client.resourceManager.getResource(identifier).isEmpty) {
+        val hasResource = client.resourceManager.getResource(identifier).isPresent
+        val hasTexture = client.textureManager.getTexture(identifier) != null
+        if (!hasResource && !hasTexture) {
             drawFigmaBox(
                 context = context,
                 x = x,

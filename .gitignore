@@ -3,7 +3,9 @@
 .kotlin/
 build/
 build-check-*/
+build-clean-*/
 build-deploy-check-*/
+build-deploy*/
 build-runclient/
 build-runclient-*/
 out/
@@ -21,8 +23,17 @@ Thumbs.db
 
 # Local agent / temporary output
 .claude/
+.kimi/*
+!.kimi/skills/
+.obsidian/
+.vs/
+.tmp.drivedownload/
 .tmp.driveupload/
 project_status.txtnpm
+
+# Compiled admin panel assets (generated from source)
+license-admin/src/main/resources/admin-static/
+license-admin/src/main/resources/admin-themes/
 
 # Logs / crash dumps
 *.log
@@ -39,6 +50,10 @@ figma.properties
 *.local.properties
 local.properties
 
+# License server — fully private, not open-source
+license-server/
+license-admin-run/
+
 # License / role system private material
 roles.json
 roles.dat
@@ -50,7 +65,6 @@ license.properties
 install-id.dat
 hardware-fingerprint.txt
 /data/
-/license-server/data/
 *.pem
 *.key
 *.p8
@@ -60,6 +74,19 @@ hardware-fingerprint.txt
 id_rsa*
 id_ecdsa*
 id_ed25519*
+
+# Native compiled binaries (sources stay: native/*.cpp native/*.bat native/CMakeLists.txt)
+native/*.exe
+native/*.dll
+native/*.obj
+native/*.winmd
+src/main/resources/native/
+
+# Generated / temp files
+src/main/resources/assets/hypnosia/discord_rpc_icon.png
+81
+kimi-export-*.md
+session-*.md
 
 # Local exported / reference material
 _external/
@@ -72,3 +99,18 @@ _external/
 
 # Keep Gradle wrapper executable for reproducible builds
 !gradle/wrapper/gradle-wrapper.jar
+
+# Temporary / audit files
+AUDIT_RESULTS.md
+DOCS_INDEX.md
+generate_chunk_02.py
+original.kt
+tmp_icons/
+figma.properties*
+
+# Private / non-mod content (removed from public repo)
+license-admin/
+docs/
+native/
+tools/
+scripts/hypnosia-menu.sh

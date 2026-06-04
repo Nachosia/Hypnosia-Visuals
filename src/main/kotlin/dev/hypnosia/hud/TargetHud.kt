@@ -114,6 +114,7 @@ object TargetHud {
     }
 
     private fun render(context: DrawContext, tickCounter: RenderTickCounter) {
+        if (MinecraftClient.getInstance().currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         val client = MinecraftClient.getInstance()
         if (!TargetHudSettings.isEnabled() || client.player == null) return
 

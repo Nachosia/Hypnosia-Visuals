@@ -7,6 +7,8 @@ data class LicenseRole(val name: String) {
         val USER = LicenseRole("USER")
         val SPONSOR = LicenseRole("SPONSOR")
         val QA = LicenseRole("QA")
+        val HELPER = LicenseRole("HELPER")
+        val MODERATOR = LicenseRole("MODERATOR")
         val ADMIN = LicenseRole("ADMIN")
         val OWNER = LicenseRole("OWNER")
 
@@ -22,11 +24,30 @@ data class LicenseRole(val name: String) {
             return when (role.name) {
                 "OWNER" -> "role_owner.png"
                 "ADMIN" -> "role_admin.png"
+                "MODERATOR" -> "role_moderator.png"
+                "HELPER" -> "role_helper.png"
                 "QA" -> "role_qa.png"
                 "SPONSOR" -> "role_sponsor.png"
                 "USER" -> "role_user.png"
                 else -> "role_custom.png"
             }
+        }
+
+        fun displayName(role: LicenseRole): String = displayName(role.name)
+
+        fun displayName(name: String): String = when (name) {
+            "SPONSOR" -> "Sponsor"
+            "SPONSOR_PLUS" -> "Sponsor [+]"
+            "SPONSOR_PLUSPLUS", "SPONSOR_PLUS_PLUS" -> "Sponsor [++]"
+            "OWNER" -> "Owner"
+            "ADMIN" -> "Admin"
+            "MODERATOR" -> "Moderator"
+            "HELPER" -> "Helper"
+            "QA" -> "QA"
+            "SLIHA" -> "Developer"
+            "VIP" -> "VIP"
+            "USER" -> "User"
+            else -> name
         }
     }
 }

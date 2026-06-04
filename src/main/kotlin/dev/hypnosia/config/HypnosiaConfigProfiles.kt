@@ -7,6 +7,7 @@ import dev.hypnosia.hud.WatermarkSettings
 import dev.hypnosia.other.FriendsManager
 import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.visual.AspectRatioSettings
+import dev.hypnosia.visual.image.ImageRenderModule
 import dev.hypnosia.world.WorldVisualSettings
 import dev.hypnosia.license.HypnosiaPaths
 import java.nio.ByteBuffer
@@ -17,7 +18,9 @@ import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.name
+import kotlin.io.path.readBytes
 import kotlin.io.path.readText
+import kotlin.io.path.writeBytes
 import kotlin.io.path.writeText
 
 object HypnosiaConfigProfiles {
@@ -41,6 +44,7 @@ object HypnosiaConfigProfiles {
         "other.",
         "icons.",
         "theme.",
+        "image.",
     )
 
     private val nameRegex = Regex("""^[\p{L}\p{N} _.-]{1,48}$""")
@@ -134,7 +138,7 @@ object HypnosiaConfigProfiles {
 
     fun exportCanonicalBytes(name: String): ByteArray? {
         val normalized = normalizeName(name) ?: return null
-        val settings = readConfig(normalized) ?: return null
+        val settings = readConfigRaw(normalized) ?: return null
         return canonicalBytes(settings)
     }
 
@@ -178,6 +182,7 @@ object HypnosiaConfigProfiles {
         FriendsManager.reload()
         StreamerModeSettings.reload()
         AspectRatioSettings.reload()
+        ImageRenderModule.reload()
     }
 
     private fun currentSnapshot(): Map<String, String> =
@@ -200,10 +205,59 @@ object HypnosiaConfigProfiles {
     private fun writeConfig(name: String, settings: Map<String, String>) {
         val file = configFile(name)
         file.parent.createDirectories()
-        file.writeText(encodeConfig(sanitizeSettings(settings)), StandardCharsets.UTF_8)
+        val enriched = settings.toMutableMap()
+        // Embed image files into config for cloud sync
+        val entriesRaw = enriched["image.entries"]
+        if (!entriesRaw.isNullOrBlank()) {
+            entriesRaw.split(",").map { it.trim() }.filter { it.isNotBlank() }.forEach { imgPath ->
+                val dataKey = "image.data.${imgPath.lowercase().replace(" ", "_")}"
+                if (dataKey !in enriched) {
+                    val imgFile = ImageRenderModule.KARTINKI_DIR.resolve(imgPath)
+                    if (imgFile.exists()) {
+                        runCatching {
+                            val base64 = java.util.Base64.getEncoder().encodeToString(imgFile.readBytes())
+                            enriched[dataKey] = base64
+                        }
+                    }
+                }
+            }
+        }
+        file.writeText(encodeConfig(sanitizeSettings(enriched)), StandardCharsets.UTF_8)
     }
 
     private fun readConfig(name: String): Map<String, String>? {
+        val file = configFile(name)
+        if (!file.exists()) return null
+        val json = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrNull() ?: return null
+        if (!json.contains("\"format\"") || !json.contains("\"$FORMAT\"")) return emptyMap()
+        val settingsBody = settingsObjectBody(json) ?: return emptyMap()
+        val raw = decodeStringMap(settingsBody)
+        val extracted = raw.toMutableMap()
+        // Extract embedded image data to kartinki folder
+        val dataKeys = raw.keys.filter { it.startsWith("image.data.") }
+        if (dataKeys.isNotEmpty()) {
+            for (key in dataKeys) {
+                val imgPath = key.removePrefix("image.data.")
+                val base64 = raw[key] ?: continue
+                runCatching {
+                    val bytes = java.util.Base64.getDecoder().decode(base64)
+                    val target = ImageRenderModule.KARTINKI_DIR.resolve(imgPath).normalize()
+                    val root = ImageRenderModule.KARTINKI_DIR.normalize()
+                    if (!target.startsWith(root)) {
+                        println("[Hypnosia] Path traversal blocked in config image extraction: $imgPath")
+                        return@runCatching
+                    }
+                    target.parent.createDirectories()
+                    target.writeBytes(bytes)
+                }
+                extracted.remove(key)
+            }
+            ImageRenderModule.reload()
+        }
+        return sanitizeSettings(extracted)
+    }
+
+    private fun readConfigRaw(name: String): Map<String, String>? {
         val file = configFile(name)
         if (!file.exists()) return null
         val json = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrNull() ?: return null
@@ -219,7 +273,7 @@ object HypnosiaConfigProfiles {
         val sanitized = linkedMapOf<String, String>()
         settings.entries
             .asSequence()
-            .filter { (key, value) -> validSettingKey(key) && validSettingValue(value) }
+            .filter { (key, value) -> validSettingKey(key) && (key.startsWith("image.data.") || validSettingValue(value)) }
             .sortedBy { it.key }
             .take(MAX_SETTINGS_COUNT)
             .forEach { (key, value) -> sanitized[key] = value }

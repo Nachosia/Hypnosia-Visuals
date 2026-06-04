@@ -315,8 +315,9 @@ class V2ModuleSettingsDrawer(
                 return true
             }
             // File rows
-            files.forEachIndexed { index, fileName ->
-                val rowY = bounds.y + 219.0f + index * 48.0f
+            var currentY = bounds.y + 219.0f
+            files.forEach { fileName ->
+                val rowY = currentY
                 val rowRect = Rect(bounds.x + 11.0f, rowY, 258.0f, 40.0f)
                 if (contains(mouseX, contentMouseY, rowRect.x, rowRect.y, rowRect.width, rowRect.height)) {
                     val relativeX = mouseX - rowRect.x
@@ -362,7 +363,12 @@ class V2ModuleSettingsDrawer(
                             ImageRenderModule.reload()
                             return true
                         }
+                        currentY += 192.0f
+                    } else {
+                        currentY += 48.0f
                     }
+                } else {
+                    currentY += 48.0f
                 }
             }
         } else if (module()?.id == "world.custom_fog") {
@@ -1734,10 +1740,16 @@ class V2ModuleSettingsDrawer(
     private fun imageSettingsContentHeight(): Float {
         val files = imageFilesInFolder()
         val selected = ImageRenderModule.selectedEntryPath
-        val selectedIndex = files.indexOfFirst { it.equals(selected, ignoreCase = true) }
-        val extra = if (selectedIndex >= 0) 144.0f else 0.0f
-        val listBottom = 219.0f + files.size * 48.0f + extra + 16.0f
-        return listBottom
+        var height = 219.0f
+        files.forEach { fileName ->
+            height += 48.0f
+            if (fileName.equals(selected, ignoreCase = true) &&
+                ImageRenderConfig.entries().find { it.path.equals(fileName, ignoreCase = true) } != null
+            ) {
+                height += 144.0f
+            }
+        }
+        return height + 16.0f
     }
 
     private fun renderImageSettings(context: DrawContext) {
@@ -1775,8 +1787,9 @@ class V2ModuleSettingsDrawer(
             return
         }
 
-        files.forEachIndexed { index, fileName ->
-            val rowY = bounds.y + 219.0f + index * 48.0f
+        var currentY = bounds.y + 219.0f
+        files.forEach { fileName ->
+            val rowY = currentY
             val inConfig = ImageRenderConfig.contains(fileName)
             val entry = if (inConfig) ImageRenderConfig.entries().find { it.path.equals(fileName, ignoreCase = true) } else null
             val status = when {
@@ -1834,6 +1847,9 @@ class V2ModuleSettingsDrawer(
                     chromaColor,
                 )
                 drawSimpleRow(context, bounds.x + 11.0f, sy + 96.0f, "Remove", 9.0f, "Tap", 206.0f, 0xFFFF6B6B.toInt())
+                currentY += 192.0f
+            } else {
+                currentY += 48.0f
             }
         }
     }

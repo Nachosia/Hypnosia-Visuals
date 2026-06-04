@@ -1,8 +1,0 @@
-{
-  "name": "Hypnosia Welcome Cloud Animator",
-  "id": "hypnosia-welcome-cloud-animator",
-  "api": "1.0.0",
-  "main": "code.js",
-  "documentAccess": "dynamic-page",
-  "editorType": ["figma", "dev"]
-}

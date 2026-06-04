@@ -6,6 +6,7 @@
     "EntityRendererMixin",
     "FogRendererMixin",
     "GameRendererMixin",
+    "InGameHudMixin",
     "PlayerEntityRendererMixin",
     "PlayerListHudMixin",
     "SimpleOptionMixin"

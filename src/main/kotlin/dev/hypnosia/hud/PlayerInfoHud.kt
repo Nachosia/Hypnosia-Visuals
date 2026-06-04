@@ -59,6 +59,7 @@ object PlayerInfoHud {
 
     private fun render(context: DrawContext, tickCounter: RenderTickCounter) {
         val client = MinecraftClient.getInstance()
+        if (client.currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         val player = client.player ?: return
         if (!HudModuleSettings.isEnabled(HudModuleSettings.Module.PLAYER_INFO)) return
 

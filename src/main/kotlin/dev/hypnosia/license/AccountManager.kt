@@ -29,6 +29,7 @@ object AccountManager {
     // Public license/account API. Admin panel is still localhost-only on the VPS.
     private const val DEFAULT_API_URL = "https://api.nachosia.site"
     private const val SITE_API_URL = "https://nachosia.site"
+    const val SITE_URL = "https://nachosia.site"
     private const val MAX_CLOUD_CONFIG_BYTES = 64 * 1024
     private const val MAX_CLOUD_IMAGE_BYTES = 30 * 1024 * 1024
     private val DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(8)
@@ -271,7 +272,7 @@ object AccountManager {
         val validationError = if (configType == "GIF" || configType == "PNG") {
             if (bytes.size > maxBytes) "CONFIG_TOO_LARGE" else null
         } else {
-            validateConfigBytes(bytes)
+            validateConfigBytes(bytes, hasGifRights)
         }
         if (validationError != null) {
             chatMessage("§cОшибка выгрузки: $validationError")
@@ -354,7 +355,7 @@ object AccountManager {
                     ?: return@thenApply CloudLoadResult.Error("PAYLOAD_FORMAT")
                 val canonicalBytes = HypnosiaConfigProfiles.canonicalizeBytes(bytes)
                     ?: return@thenApply CloudLoadResult.Error("PAYLOAD_SCHEMA_INVALID")
-                val validationError = validateConfigBytes(canonicalBytes)
+                val validationError = validateConfigBytes(canonicalBytes, true)
                 if (validationError != null) {
                     chatMessage("§cОшибка валидации конфига: $validationError")
                     return@thenApply CloudLoadResult.Error(validationError)
@@ -624,12 +625,16 @@ object AccountManager {
         return trimmed.takeIf { localConfigNameRegex.matches(it) }
     }
 
-    private fun validateConfigBytes(bytes: ByteArray): String? {
+    private fun validateConfigBytes(bytes: ByteArray, allowImages: Boolean = false): String? {
         if (bytes.isEmpty()) return "CONFIG_EMPTY"
-        if (bytes.size > MAX_CLOUD_CONFIG_BYTES) return "CONFIG_TOO_LARGE"
 
         val text = decodeUtf8Strict(bytes)
             ?: return "CONFIG_ENCODING"
+        val hasImages = text.contains("\"image.data.") || text.contains("\"image.data\"")
+        val maxBytes = if (hasImages && allowImages) MAX_CLOUD_IMAGE_BYTES else MAX_CLOUD_CONFIG_BYTES
+        if (bytes.size > maxBytes) return "CONFIG_TOO_LARGE"
+        if (hasImages && !allowImages) return "GIF_NOT_ALLOWED"
+
         if (!looksLikeJsonObject(text)) return "CONFIG_JSON_OBJECT_REQUIRED"
         if (!text.contains("\"format\"") || !text.contains("\"hypnosia-config\"")) return "CONFIG_FORMAT_REQUIRED"
         return null

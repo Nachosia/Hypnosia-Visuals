@@ -1,5 +1,6 @@
 package dev.hypnosia.license
 
+import dev.hypnosia.crypto.FileEncryption
 import java.util.Properties
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -16,6 +17,7 @@ data class AccountConfig(
 
         fun loadOrCreate(): AccountConfig {
             val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
+            val keyBytes = FileEncryption.deriveKey(HardwareFingerprint.currentHash64())
 
             if (!configFile.exists()) {
                 configFile.parent.createDirectories()
@@ -23,18 +25,33 @@ data class AccountConfig(
                 defaults["account.key"] = ""
                 defaults["account.id"] = ""
                 configFile.outputStream().use { output ->
-                    defaults.store(output, "Hypnosia account config. This file stores only your public account key.")
+                    defaults.store(output, "Hypnosia account config. Encrypted at rest.")
                 }
                 return AccountConfig(accountKey = null, accountId = null)
             }
 
             val properties = Properties()
             configFile.inputStream().use(properties::load)
-            val key = properties.getProperty("account.key")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?.takeIf { accountKeyRegex.matches(it) }
-                ?.uppercase()
+            var rawKey = properties.getProperty("account.key")?.trim() ?: ""
+
+            // Migrate plaintext key to encrypted on first read
+            if (rawKey.isNotBlank() && accountKeyRegex.matches(rawKey)) {
+                val encrypted = FileEncryption.encrypt(rawKey.uppercase(), keyBytes)
+                properties["account.key"] = encrypted
+                configFile.outputStream().use { output ->
+                    properties.store(output, "Hypnosia account config. Encrypted at rest.")
+                }
+                rawKey = encrypted
+            }
+
+            val key = if (rawKey.isNotBlank() && !accountKeyRegex.matches(rawKey)) {
+                FileEncryption.decrypt(rawKey, keyBytes)
+                    ?.takeIf { accountKeyRegex.matches(it) }
+                    ?.uppercase()
+            } else {
+                rawKey.takeIf { accountKeyRegex.matches(it) }?.uppercase()
+            }
+
             val id = properties.getProperty("account.id")
                 ?.trim()
                 ?.toIntOrNull()
@@ -49,12 +66,13 @@ data class AccountConfig(
 
             val configFile = HypnosiaPaths.rootFile(CONFIG_FILE_NAME)
             configFile.parent.createDirectories()
+            val keyBytes = FileEncryption.deriveKey(HardwareFingerprint.currentHash64())
 
             val properties = Properties()
-            properties["account.key"] = accountKey.uppercase()
+            properties["account.key"] = FileEncryption.encrypt(accountKey.uppercase(), keyBytes)
             properties["account.id"] = accountId.toString()
             configFile.outputStream().use { output ->
-                properties.store(output, "Hypnosia account config. This file stores only your public account key.")
+                properties.store(output, "Hypnosia account config. Encrypted at rest.")
             }
         }
     }

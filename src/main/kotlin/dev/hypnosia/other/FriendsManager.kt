@@ -50,6 +50,38 @@ object FriendsManager {
         }
     }
 
+    fun listFriends(): List<String> {
+        synchronized(lock) {
+            ensureLoadedLocked()
+            return friends.sorted()
+        }
+    }
+
+    fun addFriend(name: String) {
+        synchronized(lock) {
+            ensureLoadedLocked()
+            val normalized = name.trim().lowercase()
+            if (normalized.isBlank() || friends.contains(normalized)) return
+            friends = friends + normalized
+            saveLocked()
+        }
+    }
+
+    fun removeFriend(name: String) {
+        synchronized(lock) {
+            ensureLoadedLocked()
+            val normalized = name.trim().lowercase()
+            if (!friends.contains(normalized)) return
+            friends = friends - normalized
+            saveLocked()
+        }
+    }
+
+    private fun saveLocked() {
+        val file = HypnosiaPaths.rootFile(FILE_NAME)
+        Files.write(file, friends.sorted().joinToString("\n").toByteArray(StandardCharsets.UTF_8))
+    }
+
     private fun isFriend(name: String): Boolean {
         synchronized(lock) {
             ensureLoadedLocked()

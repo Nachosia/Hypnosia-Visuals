@@ -12,11 +12,14 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 object DiscordRpcManager {
     private const val MODULE_KEY = "module.other.discord_rpc.enabled"
     private const val APP_ID_KEY = "discord_rpc.applicationId"
+    private const val ICON_URL_KEY = "discord_rpc.iconUrl"
+    private const val DEFAULT_APP_ID = "1507742783379734628"
     private const val CONNECT_RETRY_MS = 15_000L
     private const val UPDATE_INTERVAL_MS = 15_000L
 
@@ -26,6 +29,7 @@ object DiscordRpcManager {
     private var lastConnectAttemptMs = 0L
     private var lastUpdateMs = 0L
     private var lastPayload = ""
+    private var readyReceived = false
     private val startedAtSeconds = System.currentTimeMillis() / 1000L
 
     fun tick(client: MinecraftClient) {
@@ -45,6 +49,8 @@ object DiscordRpcManager {
             return
         }
 
+        if (!readyReceived) return
+
         val now = System.currentTimeMillis()
         val payload = activityPayload(client)
         if (payload == lastPayload && now - lastUpdateMs < UPDATE_INTERVAL_MS) return
@@ -62,7 +68,10 @@ object DiscordRpcManager {
         HypnosiaClientSettings.boolean(MODULE_KEY, false)
 
     private fun applicationId(): String =
-        HypnosiaClientSettings.string(APP_ID_KEY, "").trim()
+        HypnosiaClientSettings.string(APP_ID_KEY, DEFAULT_APP_ID).trim()
+
+    private fun iconUrl(): String =
+        HypnosiaClientSettings.string(ICON_URL_KEY, "https://nachosia.site/discord-rpc-icon.gif").trim()
 
     private fun connectAsync(appId: String) {
         val now = System.currentTimeMillis()
@@ -72,15 +81,49 @@ object DiscordRpcManager {
         lastConnectAttemptMs = now
         CompletableFuture.runAsync {
             runCatching {
-                val opened = openDiscordPipe() ?: return@runCatching
+                val opened = openDiscordPipe() ?: run {
+                    log(null, "[DiscordRPC] no discord pipe found")
+                    return@runCatching
+                }
                 synchronized(lock) {
                     pipe?.close()
                     pipe = opened
+                    readyReceived = false
                 }
+                log(null, "[DiscordRPC] handshake appId=$appId")
                 sendFrame(0, """{"v":1,"client_id":"${json(appId)}"}""")
+
+                // Read READY response synchronously (Discord IPC handshake)
+                val buf = ByteArray(8)
+                val read = opened.read(buf)
+                if (read != 8) {
+                    log(null, "[DiscordRPC] bad header read=$read")
+                    return@runCatching
+                }
+                val header = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN)
+                val op = header.getInt()
+                val len = header.getInt()
+                if (len < 0 || len > 65536) {
+                    log(null, "[DiscordRPC] bad len=$len")
+                    return@runCatching
+                }
+                val payloadBytes = ByteArray(len)
+                opened.readFully(payloadBytes)
+                val text = String(payloadBytes, StandardCharsets.UTF_8)
+                log(null, "[DiscordRPC] response: $text")
+
+                if (text.contains("\"evt\":\"READY\"")) {
+                    readyReceived = true
+                    log(null, "[DiscordRPC] READY received")
+                } else if (text.contains("\"error\"")) {
+                    log(null, "[DiscordRPC] handshake error: $text")
+                    return@runCatching
+                }
+
                 lastPayload = ""
                 lastUpdateMs = 0L
-            }.onFailure {
+            }.onFailure { e ->
+                log(null, "[DiscordRPC] connect error: ${e.message}")
                 disconnect()
             }
             connecting.set(false)
@@ -90,7 +133,10 @@ object DiscordRpcManager {
     private fun sendFrameAsync(op: Int, payload: String) {
         CompletableFuture.runAsync {
             runCatching { sendFrame(op, payload) }
-                .onFailure { disconnect() }
+                .onFailure { e ->
+                    log(null, "[DiscordRPC] send error: ${e.message}")
+                    disconnect()
+                }
         }
     }
 
@@ -110,10 +156,14 @@ object DiscordRpcManager {
     }
 
     private fun activityPayload(client: MinecraftClient): String {
-        val (details, state) = rpcLines()
+        val (details, state) = rpcLines(client)
         val nonce = UUID.randomUUID().toString()
         val largeText = client.session.username
+        val icon = iconUrl()
+        val profileUrl = profileUrl()
         val stateField = if (state.isBlank()) "" else ",\"state\":\"${json(state)}\""
+        val buttonsField = if (profileUrl.isBlank()) "" else ",\"buttons\":[{\"label\":\"Профиль\",\"url\":\"${json(profileUrl)}\"}]"
+        val largeImageField = if (icon.isBlank()) "" else ",\"large_image\":\"${json(icon)}\""
         return """
             {
               "cmd":"SET_ACTIVITY",
@@ -122,7 +172,8 @@ object DiscordRpcManager {
                 "activity":{
                   "details":"${json(details)}"$stateField,
                   "timestamps":{"start":$startedAtSeconds},
-                  "assets":{"large_text":"${json(largeText)}"}
+                  "assets":{"large_text":"${json(largeText)}"$largeImageField}
+                  $buttonsField
                 }
               },
               "nonce":"$nonce"
@@ -130,12 +181,19 @@ object DiscordRpcManager {
         """.trimIndent().replace("\n", "")
     }
 
-    private fun rpcLines(): Pair<String, String> {
+    private fun rpcLines(client: MinecraftClient): Pair<String, String> {
         val state = AccountManager.state
         if (state !is AccountState.Valid) return "no acc" to ""
 
-        val roles = state.session.roles.joinToString(" ") { it.name }.ifBlank { "USER" }
-        return "ID: ${state.session.accountId}" to "Role: $roles"
+        val displayName = state.session.displayName?.takeIf { it.isNotBlank() }
+            ?: client.session.username
+        return "ID: ${state.session.accountId}" to displayName
+    }
+
+    private fun profileUrl(): String {
+        val state = AccountManager.state
+        if (state !is AccountState.Valid) return ""
+        return "${AccountManager.SITE_URL}/#/profile/${state.session.accountId}"
     }
 
     private fun openDiscordPipe(): RandomAccessFile? {
@@ -162,6 +220,7 @@ object DiscordRpcManager {
         synchronized(lock) {
             runCatching { pipe?.close() }
             pipe = null
+            readyReceived = false
             lastPayload = ""
         }
     }
@@ -173,4 +232,8 @@ object DiscordRpcManager {
 
     private fun json(value: String): String =
         value.replace("\\", "\\\\").replace("\"", "\\\"")
+
+    private fun log(client: MinecraftClient?, msg: String) {
+        println(msg)
+    }
 }

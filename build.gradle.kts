@@ -4,6 +4,7 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -34,9 +35,28 @@ dependencies {
     modImplementation("net.fabricmc:fabric-loader:${property("loader_version")}")
     modImplementation("net.fabricmc.fabric-api:fabric-api:${property("fabric_api_version")}")
     modImplementation("net.fabricmc:fabric-language-kotlin:${property("fabric_kotlin_version")}")
+    implementation("net.java.dev.jna:jna:5.14.0")
+    implementation("net.java.dev.jna:jna-platform:5.14.0")
+}
+
+tasks.register("ensureIconMcmeta") {
+    group = "resources"
+    description = "Ensures every .png in icons folder has a corresponding .png.mcmeta with blur=true"
+
+    val iconsDir = layout.projectDirectory.dir("src/main/resources/assets/hypnosia/textures/gui/icons")
+    doLast {
+        iconsDir.asFileTree.matching { include("**/*.png") }.forEach { png ->
+            val mcmeta = File(png.parentFile, "${png.name}.mcmeta")
+            if (!mcmeta.exists()) {
+                mcmeta.writeText("""{"texture":{"blur":true,"clamp":false}}""")
+                logger.lifecycle("Created ${mcmeta.relativeTo(iconsDir.asFile)}")
+            }
+        }
+    }
 }
 
 tasks.processResources {
+    dependsOn("ensureIconMcmeta")
     inputs.property("version", project.version)
 
     filesMatching("fabric.mod.json") {
@@ -56,6 +76,68 @@ java {
     withSourcesJar()
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+}
+
+// ─── Build-time secret injection ───
+val generateBuildConfig by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/source/buildconfig/main/kotlin")
+    outputs.dir(outputDir)
+
+    doLast {
+        val dir = outputDir.get().asFile.resolve("dev/hypnosia")
+        dir.mkdirs()
+
+        val modApiKey = providers.gradleProperty("modApiKey").orElse(
+            providers.environmentVariable("HYPNOSIA_MOD_API_KEY")
+        ).getOrElse("REPLACE_ME_MOD_API_KEY")
+
+        val modSecretKey = providers.gradleProperty("modSecretKey").orElse(
+            providers.environmentVariable("HYPNOSIA_MOD_SECRET_KEY")
+        ).getOrElse("REPLACE_ME_MOD_SECRET_KEY")
+
+        val mediaExeFile = layout.projectDirectory.file("src/main/resources/native/windows/hypnosia_media.exe").asFile
+        val mediaExeHash = if (mediaExeFile.isFile) {
+            MessageDigest.getInstance("SHA-256").let { md ->
+                mediaExeFile.inputStream().use { stream ->
+                    val buffer = ByteArray(8192)
+                    var read: Int
+                    while (stream.read(buffer).also { read = it } > 0) {
+                        md.update(buffer, 0, read)
+                    }
+                }
+                md.digest().joinToString("") { "%02x".format(it) }
+            }
+        } else {
+            ""
+        }
+
+        dir.resolve("BuildConfig.kt").writeText(
+            """package dev.hypnosia
+
+object BuildConfig {
+    const val MOD_API_KEY = "${modApiKey.replace("\"", "\\\"")}"
+    const val MOD_SECRET_KEY = "${modSecretKey.replace("\"", "\\\"")}"
+    const val MEDIA_BRIDGE_EXE_HASH = "$mediaExeHash"
+}
+"""
+        )
+    }
+}
+
+sourceSets {
+    main {
+        kotlin {
+            srcDir(layout.buildDirectory.dir("generated/source/buildconfig/main/kotlin"))
+        }
+    }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    dependsOn(generateBuildConfig)
+}
+
+tasks.withType<Jar>().configureEach {
+    dependsOn(generateBuildConfig)
 }
 
 val figmaFileId = "4BfRUKPJD8vnOHSQbrzmKS"

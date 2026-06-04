@@ -90,4 +90,8 @@ class FigmaRoot(
     fun charTyped(chr: Char, modifiers: Int): Boolean {
         return child.charTyped(chr, modifiers)
     }
+
+    fun onScreenClose() {
+        child.onScreenClose()
+    }
 }

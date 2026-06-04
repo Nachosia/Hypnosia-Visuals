@@ -138,6 +138,83 @@ object HighQualityTextRenderer {
         return true
     }
 
+    fun drawGradient(
+        context: DrawContext,
+        text: String,
+        x: Float,
+        y: Float,
+        color: Int,
+        style: FigmaTextRenderer.FigmaTextStyle,
+        gradientColor1: Int,
+        gradientColor2: Int,
+        time: Float,
+        fade: TextFade? = null,
+    ): Boolean {
+        if (text.isEmpty()) {
+            return true
+        }
+
+        val atlas = atlas(style) ?: return false
+        val guiMatrix = createGuiMatrix(context)
+        val baselineY = y + atlas.ascent
+        val glyphCount = countVisibleGlyphs(text, atlas)
+        if (glyphCount == 0) {
+            return true
+        }
+
+        context.drawDeferredElements()
+        val tessellator = Tessellator.getInstance()
+        val buffer = tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR)
+        var cursorX = x
+        var previousChar = 0.toChar()
+        var hasPrevious = false
+
+        for (index in text.indices) {
+            val sourceChar = text[index]
+            val glyphChar = if (atlas.glyphs.containsKey(sourceChar)) sourceChar else atlas.fallbackGlyph
+            val glyph = atlas.glyphs[glyphChar]
+            if (glyph == null) {
+                cursorX += style.size * 0.5f
+                if (index != text.lastIndex) {
+                    cursorX += style.letterSpacing
+                }
+                hasPrevious = false
+                continue
+            }
+
+            if (hasPrevious) {
+                cursorX += atlas.kerning(previousChar, glyphChar)
+            }
+            if (!sourceChar.isWhitespace() && glyph.width > 0.0f && glyph.height > 0.0f) {
+                val gx = cursorX + glyph.offsetX
+                val gy = baselineY + glyph.offsetY
+                putVertex(buffer, guiMatrix, gx, gy, glyph.u0, glyph.v0, color)
+                putVertex(buffer, guiMatrix, gx, gy + glyph.height, glyph.u0, glyph.v1, color)
+                putVertex(buffer, guiMatrix, gx + glyph.width, gy + glyph.height, glyph.u1, glyph.v1, color)
+                putVertex(buffer, guiMatrix, gx + glyph.width, gy, glyph.u1, glyph.v0, color)
+            }
+
+            cursorX += glyph.advance
+            if (index != text.lastIndex) {
+                cursorX += style.letterSpacing
+            }
+            previousChar = glyphChar
+            hasPrevious = true
+        }
+
+        val builtBuffer = buffer.end()
+        val vertexBuffer = createOwnedVertexBuffer("Hypnosia HQ gradient text vertices", builtBuffer)
+        try {
+            renderImmediateGradient(context, vertexBuffer, atlas.texture, glyphCount, fade, guiMatrix, gradientColor1, gradientColor2, time)
+        } finally {
+            vertexBuffer.close()
+            builtBuffer.close()
+            context.drawDeferredElements()
+        }
+
+        return true
+    }
+
     fun width(text: String, style: FigmaTextRenderer.FigmaTextStyle): Float? {
         if (text.isEmpty()) {
             return 0.0f
@@ -547,6 +624,88 @@ object HighQualityTextRenderer {
         bytes.flip()
         return RenderSystem.getDevice().createBuffer(
             { "Hypnosia text fade uniforms" },
+            GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
+            bytes,
+        )
+    }
+
+    private fun renderImmediateGradient(
+        context: DrawContext,
+        vertexBuffer: GpuBuffer,
+        texture: NativeImageBackedTexture,
+        glyphCount: Int,
+        fade: TextFade?,
+        guiMatrix: Matrix4f,
+        gradientColor1: Int,
+        gradientColor2: Int,
+        time: Float,
+    ) {
+        val client = MinecraftClient.getInstance()
+        val framebuffer = client.framebuffer
+        val window = client.window
+        val scaledWidth = window.framebufferWidth.toFloat() / window.scaleFactor.toFloat().coerceAtLeast(1.0f)
+        val scaledHeight = window.framebufferHeight.toFloat() / window.scaleFactor.toFloat().coerceAtLeast(1.0f)
+        val dynamicTransforms = RenderSystem.getDynamicUniforms().write(
+            Matrix4f().setTranslation(0.0f, 0.0f, GUI_MODEL_VIEW_Z),
+            Vector4f(1.0f, 1.0f, 1.0f, 1.0f),
+            Vector3f(0.0f, 0.0f, 0.0f),
+            Matrix4f(),
+        )
+        val indexBuffer = RenderSystem.getSequentialBuffer(VertexFormat.DrawMode.QUADS)
+        val gpuIndexBuffer = indexBuffer.getIndexBuffer(glyphCount * 6)
+        val indexType = indexBuffer.indexType
+        val fadeUniform = createTextFadeUniformBuffer(fade, guiMatrix)
+        val gradientUniform = createGradientUniformBuffer(gradientColor1, gradientColor2, time)
+
+        RenderSystem.backupProjectionMatrix()
+        RenderSystem.setProjectionMatrix(guiProjection.set(scaledWidth, scaledHeight), ProjectionType.ORTHOGRAPHIC)
+        try {
+            RenderSystem.getDevice()
+                .createCommandEncoder()
+                .createRenderPass(
+                    { "Hypnosia HQ gradient text" },
+                    framebuffer.getColorAttachmentView(),
+                    OptionalInt.empty(),
+                    if (framebuffer.useDepthAttachment) framebuffer.getDepthAttachmentView() else null,
+                    OptionalDouble.empty(),
+                ).use { pass ->
+                    RenderSystem.bindDefaultUniforms(pass)
+                    pass.setUniform("DynamicTransforms", dynamicTransforms)
+                    pass.setUniform("HypnosiaTextFade", fadeUniform)
+                    pass.setUniform("HypnosiaGradient", gradientUniform)
+                    HypnosiaScissor.current()?.let { scissor ->
+                        pass.enableScissor(scissor.x, scissor.y, scissor.width, scissor.height)
+                    }
+                    pass.bindTexture("Sampler0", texture.glTextureView, textSampler())
+                    pass.setPipeline(HypnosiaShaders.HQ_TEXT_GRADIENT)
+                    pass.setVertexBuffer(0, vertexBuffer)
+                    pass.setIndexBuffer(gpuIndexBuffer, indexType)
+                    pass.drawIndexed(0, 0, glyphCount * 6, 1)
+                }
+        } finally {
+            RenderSystem.restoreProjectionMatrix()
+            fadeUniform.close()
+            gradientUniform.close()
+        }
+    }
+
+    private fun createGradientUniformBuffer(c1: Int, c2: Int, time: Float): GpuBuffer {
+        val bytes = ByteBuffer.allocateDirect(48).order(ByteOrder.nativeOrder())
+        bytes.putFloat(((c1 shr 16) and 0xFF) / 255f)
+        bytes.putFloat(((c1 shr 8) and 0xFF) / 255f)
+        bytes.putFloat((c1 and 0xFF) / 255f)
+        bytes.putFloat(0.0f)
+        bytes.putFloat(((c2 shr 16) and 0xFF) / 255f)
+        bytes.putFloat(((c2 shr 8) and 0xFF) / 255f)
+        bytes.putFloat((c2 and 0xFF) / 255f)
+        bytes.putFloat(0.0f)
+        bytes.putFloat(0.06f)
+        bytes.putFloat(1.5f)
+        bytes.putFloat(time)
+        bytes.putFloat(0.0f)
+        bytes.flip()
+        return RenderSystem.getDevice().createBuffer(
+            { "Hypnosia gradient uniforms" },
             GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
             bytes,
         )

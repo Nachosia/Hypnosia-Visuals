@@ -438,6 +438,38 @@ object HypnosiaHomeV2Layout {
                 selectedSettingsModuleId = null
                 return true
             }
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_V && (modifiers and org.lwjgl.glfw.GLFW.GLFW_MOD_CONTROL != 0)) {
+                val text = MinecraftClient.getInstance().keyboard.clipboard
+                when (focusedField) {
+                    "cloud_key" -> {
+                        val filtered = text.filter { it.isLetterOrDigit() }.uppercase().take(8)
+                        accountCloudKeyInput = filtered
+                        return true
+                    }
+                    "account_name" -> {
+                        val remaining = 32 - accountNameInput.length
+                        if (remaining > 0) accountNameInput += text.take(remaining)
+                        return true
+                    }
+                    "account_contact" -> {
+                        val remaining = 64 - accountContactInput.length
+                        if (remaining > 0) accountContactInput += text.take(remaining)
+                        return true
+                    }
+                    "search" -> {
+                        searchText += text
+                        return true
+                    }
+                    "config_search" -> {
+                        configSearchText += text
+                        return true
+                    }
+                    "friend_search" -> {
+                        friendSearchText += text
+                        return true
+                    }
+                }
+            }
             when (focusedField) {
                 "friend_search" -> when (keyCode) {
                     257 -> {

@@ -49,6 +49,7 @@ object HotKeyHud {
 
     private fun render(context: DrawContext, tickCounter: RenderTickCounter) {
         val client = MinecraftClient.getInstance()
+        if (client.currentScreen is dev.hypnosia.ui.HypnosiaHomeV2Screen) return
         if (client.player == null || !HudModuleSettings.isEnabled(HudModuleSettings.Module.HOTKEYS)) return
         val state = HudModuleSettings.state(HudModuleSettings.Module.HOTKEYS)
         val rows = rows()

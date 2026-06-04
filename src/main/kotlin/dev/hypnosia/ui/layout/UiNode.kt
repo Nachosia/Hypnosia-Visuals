@@ -25,6 +25,8 @@ interface UiNode {
     fun keyPressed(keyCode: Int, scanCode: Int, modifiers: Int): Boolean = false
 
     fun charTyped(chr: Char, modifiers: Int): Boolean = false
+
+    fun onScreenClose() {}
 }
 
 abstract class BaseUiNode(
