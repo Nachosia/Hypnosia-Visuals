@@ -13,9 +13,14 @@ import dev.hypnosia.ui.render.FigmaTextRenderer
 import dev.hypnosia.ui.render.HypnosiaRenderUtils
 import dev.hypnosia.ui.render.HypnosiaScissor
 import dev.hypnosia.visual.AspectRatioSettings
+import dev.hypnosia.visual.cosmetic.CosmeticSettings
 import dev.hypnosia.visual.image.ImageRenderConfig
 import dev.hypnosia.visual.image.ImageRenderEntry
 import dev.hypnosia.visual.image.ImageRenderModule
+import dev.hypnosia.visual.world.particles.WorldParticleMode
+import dev.hypnosia.visual.world.particles.WorldParticleSettings
+import dev.hypnosia.visual.world.particles.WorldParticleTexture
+import dev.hypnosia.visual.world.particles.WorldGravityMode
 import dev.hypnosia.world.WorldVisualSettings
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
@@ -39,6 +44,7 @@ class V2ModuleSettingsDrawer(
     private var activeTargetSlider: TargetSliderKind? = null
     private var activeWorldSlider: WorldSliderKind? = null
     private var activeAspectSlider = false
+    private var activeCosmeticSlider: CosmeticSliderKind? = null
     private var activeImageSlider: ImageSlider? = null
     private var imageNameEditing = false
     private var imageNameInput = ""
@@ -51,6 +57,9 @@ class V2ModuleSettingsDrawer(
     private var lastModuleId: String? = null
     private var iconPaletteOpen = false
     private var fogPaletteOpen = false
+    private var particleTextureListOpen = false
+    private var hitTextureListOpen = false
+    private var jumpPTextureListOpen = false
     private var themePaletteTarget: ThemePaletteTarget? = null
     private var colorPickerTarget: ColorPickerTarget? = null
     private var colorPickerDrag: ColorPickerDrag? = null
@@ -406,15 +415,499 @@ class V2ModuleSettingsDrawer(
                     }
                 }
             }
-        } else if (module()?.id == "other.friends") {
-            val displayRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
-            if (contains(mouseX, contentMouseY, displayRect.x, displayRect.y, displayRect.width, displayRect.height)) {
-                val next = !FriendsManager.isEnabled()
-                FriendsManager.setEnabled(next)
-                module()?.enabled = next
+        } else if (module()?.id == "world.particles") {
+            val listOff = if (particleTextureListOpen) particleTextureListHeight() else 0.0f
+            val toggleRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
+            val modeRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
+            val textureRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, toggleRect.x, toggleRect.y, toggleRect.width, toggleRect.height)) {
+                WorldParticleSettings.setEnabled(!WorldParticleSettings.enabled())
+                module()?.enabled = WorldParticleSettings.enabled()
                 return true
             }
-        } else if (module()?.id == "other.streamer_mode") {
+            if (contains(mouseX, contentMouseY, modeRect.x, modeRect.y, modeRect.width, modeRect.height)) {
+                val entries = WorldParticleMode.entriesList()
+                val nextOrdinal = (WorldParticleSettings.mode().ordinal + 1) % entries.size
+                WorldParticleSettings.setMode(entries[nextOrdinal])
+                return true
+            }
+            if (contains(mouseX, contentMouseY, textureRect.x, textureRect.y, textureRect.width, textureRect.height)) {
+                particleTextureListOpen = !particleTextureListOpen
+                return true
+            }
+            if (particleTextureListOpen) {
+                val textures = WorldParticleTexture.entriesList()
+                for ((i, tex) in textures.withIndex()) {
+                    val iy = bounds.y + 211.0f + i * PARTICLE_TEX_ROW_H
+                    if (contains(mouseX, contentMouseY, bounds.x + 17.0f, iy, 240.0f, PARTICLE_TEX_ROW_H)) {
+                        WorldParticleSettings.toggleTexture(tex)
+                        return true
+                    }
+                }
+            }
+            val countRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f + listOff, 258.0f, 48.0f)
+            val rateRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f + listOff, 258.0f, 48.0f)
+            val sizeRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f + listOff, 258.0f, 48.0f)
+            val speedRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f + listOff, 258.0f, 48.0f)
+            val lifeRect = Rect(bounds.x + 11.0f, bounds.y + 411.0f + listOff, 258.0f, 48.0f)
+            val gravityRect = Rect(bounds.x + 11.0f, bounds.y + 459.0f + listOff, 258.0f, 48.0f)
+            val alphaRect = Rect(bounds.x + 11.0f, bounds.y + 507.0f + listOff, 258.0f, 48.0f)
+            if (contains(mouseX, contentMouseY, countRect.x, countRect.y, countRect.width, countRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_COUNT
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, rateRect.x, rateRect.y, rateRect.width, rateRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_SPAWN_RATE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, sizeRect.x, sizeRect.y, sizeRect.width, sizeRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_SIZE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, speedRect.x, speedRect.y, speedRect.width, speedRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_SPEED
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, lifeRect.x, lifeRect.y, lifeRect.width, lifeRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_LIFE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gravityRect.x, gravityRect.y, gravityRect.width, gravityRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_GRAVITY
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, alphaRect.x, alphaRect.y, alphaRect.width, alphaRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_ALPHA
+                updateWorldSlider(mouseX)
+                return true
+            }
+            val heightRect = Rect(bounds.x + 11.0f, bounds.y + 555.0f + listOff, 258.0f, 48.0f)
+            if (contains(mouseX, contentMouseY, heightRect.x, heightRect.y, heightRect.width, heightRect.height)) {
+                activeWorldSlider = WorldSliderKind.PARTICLE_SPAWN_HEIGHT
+                updateWorldSlider(mouseX)
+                return true
+            }
+            val gravityModeRect = Rect(bounds.x + 11.0f, bounds.y + 603.0f + listOff, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, gravityModeRect.x, gravityModeRect.y, gravityModeRect.width, gravityModeRect.height)) {
+                val entries = WorldGravityMode.entriesList()
+                val nextOrdinal = (WorldParticleSettings.gravityMode().ordinal + 1) % entries.size
+                WorldParticleSettings.setGravityMode(entries[nextOrdinal])
+                return true
+            }
+            val colorCountRect = Rect(bounds.x + 11.0f, bounds.y + 651.0f + listOff, 258.0f, 40.0f)
+            val gradientRect = Rect(bounds.x + 11.0f, bounds.y + 699.0f + listOff, 258.0f, 40.0f)
+            val animSpeedRect = Rect(bounds.x + 11.0f, bounds.y + 747.0f + listOff, 258.0f, 48.0f)
+            val pColor1Rect = Rect(bounds.x + 11.0f, bounds.y + 795.0f + listOff, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, colorCountRect.x, colorCountRect.y, colorCountRect.width, colorCountRect.height)) {
+                val next = WorldParticleSettings.colorCount() % 4 + 1
+                WorldParticleSettings.setColorCount(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gradientRect.x, gradientRect.y, gradientRect.width, gradientRect.height)) {
+                val next = when (WorldParticleSettings.gradientMode()) {
+                    CosmeticSettings.GradientMode.STATIC -> CosmeticSettings.GradientMode.FLUID
+                    CosmeticSettings.GradientMode.FLUID -> CosmeticSettings.GradientMode.CHROMA
+                    CosmeticSettings.GradientMode.CHROMA -> CosmeticSettings.GradientMode.STATIC
+                }
+                WorldParticleSettings.setGradientMode(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, animSpeedRect.x, animSpeedRect.y, animSpeedRect.width, animSpeedRect.height)) {
+                if (WorldParticleSettings.gradientMode() != CosmeticSettings.GradientMode.STATIC) {
+                    activeWorldSlider = WorldSliderKind.PARTICLE_ANIM_SPEED
+                    updateWorldSlider(mouseX)
+                }
+                return true
+            }
+            if (contains(mouseX, contentMouseY, pColor1Rect.x, pColor1Rect.y, pColor1Rect.width, pColor1Rect.height)) {
+                colorPickerTarget = ColorPickerTarget.PARTICLE
+                return true
+            }
+            if (WorldParticleSettings.colorCount() >= 2) {
+                val c2 = Rect(bounds.x + 11.0f, bounds.y + 843.0f + listOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c2.x, c2.y, c2.width, c2.height)) {
+                    colorPickerTarget = ColorPickerTarget.PARTICLE_2
+                    return true
+                }
+            }
+            if (WorldParticleSettings.colorCount() >= 3) {
+                val c3 = Rect(bounds.x + 11.0f, bounds.y + 891.0f + listOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c3.x, c3.y, c3.width, c3.height)) {
+                    colorPickerTarget = ColorPickerTarget.PARTICLE_3
+                    return true
+                }
+            }
+            if (WorldParticleSettings.colorCount() >= 4) {
+                val c4 = Rect(bounds.x + 11.0f, bounds.y + 939.0f + listOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c4.x, c4.y, c4.width, c4.height)) {
+                    colorPickerTarget = ColorPickerTarget.PARTICLE_4
+                    return true
+                }
+            }
+        } else if (module()?.id == "world.hit_particles") {
+            val hitListOff = if (hitTextureListOpen) hitTextureListHeight() else 0.0f
+            val toggleRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
+            val triggerRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
+            val gravRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)
+            val texRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, toggleRect.x, toggleRect.y, toggleRect.width, toggleRect.height)) {
+                dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setEnabled(!dev.hypnosia.visual.world.particles.hit.HitParticleSettings.enabled())
+                module()?.enabled = dev.hypnosia.visual.world.particles.hit.HitParticleSettings.enabled()
+                return true
+            }
+            if (contains(mouseX, contentMouseY, triggerRect.x, triggerRect.y, triggerRect.width, triggerRect.height)) {
+                val entries = dev.hypnosia.visual.world.particles.hit.HitTriggerMode.entries
+                val next = entries[(dev.hypnosia.visual.world.particles.hit.HitParticleSettings.trigger().ordinal + 1) % entries.size]
+                dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setTrigger(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gravRect.x, gravRect.y, gravRect.width, gravRect.height)) {
+                val entries = dev.hypnosia.visual.world.particles.hit.HitGravityMode.entries
+                val next = entries[(dev.hypnosia.visual.world.particles.hit.HitParticleSettings.gravity().ordinal + 1) % entries.size]
+                dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setGravity(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, texRect.x, texRect.y, texRect.width, texRect.height)) {
+                hitTextureListOpen = !hitTextureListOpen
+                return true
+            }
+            if (hitTextureListOpen) {
+                val textures = WorldParticleTexture.entriesList()
+                for ((i, tex) in textures.withIndex()) {
+                    val iy = bounds.y + 259.0f + i * PARTICLE_TEX_ROW_H
+                    if (contains(mouseX, contentMouseY, bounds.x + 17.0f, iy, 240.0f, PARTICLE_TEX_ROW_H)) {
+                        dev.hypnosia.visual.world.particles.hit.HitParticleSettings.toggleTexture(tex)
+                        return true
+                    }
+                }
+            }
+            val countRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f + hitListOff, 258.0f, 48.0f)
+            val forceRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f + hitListOff, 258.0f, 48.0f)
+            val lifeRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f + hitListOff, 258.0f, 48.0f)
+            val sizeRect = Rect(bounds.x + 11.0f, bounds.y + 411.0f + hitListOff, 258.0f, 48.0f)
+            val colorCountRect = Rect(bounds.x + 11.0f, bounds.y + 459.0f + hitListOff, 258.0f, 40.0f)
+            val gradientRect = Rect(bounds.x + 11.0f, bounds.y + 507.0f + hitListOff, 258.0f, 40.0f)
+            val animRect = Rect(bounds.x + 11.0f, bounds.y + 555.0f + hitListOff, 258.0f, 48.0f)
+            if (contains(mouseX, contentMouseY, countRect.x, countRect.y, countRect.width, countRect.height)) {
+                activeWorldSlider = WorldSliderKind.HIT_COUNT
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, forceRect.x, forceRect.y, forceRect.width, forceRect.height)) {
+                activeWorldSlider = WorldSliderKind.HIT_FORCE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, lifeRect.x, lifeRect.y, lifeRect.width, lifeRect.height)) {
+                activeWorldSlider = WorldSliderKind.HIT_LIFETIME
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, sizeRect.x, sizeRect.y, sizeRect.width, sizeRect.height)) {
+                activeWorldSlider = WorldSliderKind.HIT_SIZE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, colorCountRect.x, colorCountRect.y, colorCountRect.width, colorCountRect.height)) {
+                val cur = dev.hypnosia.visual.world.particles.hit.HitParticleSettings.colorCount()
+                dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setColorCount(if (cur >= 4) 1 else cur + 1)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gradientRect.x, gradientRect.y, gradientRect.width, gradientRect.height)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                val next = entries[(dev.hypnosia.visual.world.particles.hit.HitParticleSettings.gradientMode().ordinal + 1) % entries.size]
+                dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setGradientMode(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, animRect.x, animRect.y, animRect.width, animRect.height)) {
+                activeWorldSlider = WorldSliderKind.HIT_ANIM_SPEED
+                updateWorldSlider(mouseX)
+                return true
+            }
+            val colorCount = dev.hypnosia.visual.world.particles.hit.HitParticleSettings.colorCount()
+            val c1 = Rect(bounds.x + 11.0f, bounds.y + 603.0f + hitListOff, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, c1.x, c1.y, c1.width, c1.height)) {
+                colorPickerTarget = ColorPickerTarget.HIT_PARTICLE
+                return true
+            }
+            if (colorCount >= 2) {
+                val c2 = Rect(bounds.x + 11.0f, bounds.y + 651.0f + hitListOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c2.x, c2.y, c2.width, c2.height)) {
+                    colorPickerTarget = ColorPickerTarget.HIT_PARTICLE_2
+                    return true
+                }
+            }
+            if (colorCount >= 3) {
+                val c3 = Rect(bounds.x + 11.0f, bounds.y + 699.0f + hitListOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c3.x, c3.y, c3.width, c3.height)) {
+                    colorPickerTarget = ColorPickerTarget.HIT_PARTICLE_3
+                    return true
+                }
+            }
+            if (colorCount >= 4) {
+                val c4 = Rect(bounds.x + 11.0f, bounds.y + 747.0f + hitListOff, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c4.x, c4.y, c4.width, c4.height)) {
+                    colorPickerTarget = ColorPickerTarget.HIT_PARTICLE_4
+                    return true
+                }
+            }
+        } else if (module()?.id == "world.target_esp") {
+            val s = dev.hypnosia.visual.world.esp.TargetEspSettings
+            val toggleRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
+            val texRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
+            val sizeRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 48.0f)
+            val lifeRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 48.0f)
+            val alphaRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 48.0f)
+            val rotRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 48.0f)
+            val colorCountRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 40.0f)
+            val gradientRect = Rect(bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 40.0f)
+            val animRect = Rect(bounds.x + 11.0f, bounds.y + 459.0f, 258.0f, 48.0f)
+            if (contains(mouseX, contentMouseY, toggleRect.x, toggleRect.y, toggleRect.width, toggleRect.height)) {
+                s.setEnabled(!s.enabled())
+                module()?.enabled = s.enabled()
+                return true
+            }
+            if (contains(mouseX, contentMouseY, texRect.x, texRect.y, texRect.width, texRect.height)) {
+                s.setTexture(s.texture().next())
+                return true
+            }
+            if (contains(mouseX, contentMouseY, sizeRect.x, sizeRect.y, sizeRect.width, sizeRect.height)) {
+                activeWorldSlider = WorldSliderKind.ESP_SIZE
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, lifeRect.x, lifeRect.y, lifeRect.width, lifeRect.height)) {
+                activeWorldSlider = WorldSliderKind.ESP_LIFETIME
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, alphaRect.x, alphaRect.y, alphaRect.width, alphaRect.height)) {
+                activeWorldSlider = WorldSliderKind.ESP_ALPHA
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, rotRect.x, rotRect.y, rotRect.width, rotRect.height)) {
+                activeWorldSlider = WorldSliderKind.ESP_ROTATION
+                updateWorldSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, colorCountRect.x, colorCountRect.y, colorCountRect.width, colorCountRect.height)) {
+                val cur = s.colorCount()
+                s.setColorCount(if (cur >= 4) 1 else cur + 1)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gradientRect.x, gradientRect.y, gradientRect.width, gradientRect.height)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                val next = entries[(s.gradientMode().ordinal + 1) % entries.size]
+                s.setGradientMode(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, animRect.x, animRect.y, animRect.width, animRect.height)) {
+                activeWorldSlider = WorldSliderKind.ESP_ANIM_SPEED
+                updateWorldSlider(mouseX)
+                return true
+            }
+            val colorCount = s.colorCount()
+            val c1 = Rect(bounds.x + 11.0f, bounds.y + 507.0f, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, c1.x, c1.y, c1.width, c1.height)) {
+                colorPickerTarget = ColorPickerTarget.ESP_COLOR_1
+                return true
+            }
+            if (colorCount >= 2) {
+                val c2 = Rect(bounds.x + 11.0f, bounds.y + 555.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c2.x, c2.y, c2.width, c2.height)) {
+                    colorPickerTarget = ColorPickerTarget.ESP_COLOR_2
+                    return true
+                }
+            }
+            if (colorCount >= 3) {
+                val c3 = Rect(bounds.x + 11.0f, bounds.y + 603.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c3.x, c3.y, c3.width, c3.height)) {
+                    colorPickerTarget = ColorPickerTarget.ESP_COLOR_3
+                    return true
+                }
+            }
+            if (colorCount >= 4) {
+                val c4 = Rect(bounds.x + 11.0f, bounds.y + 651.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, c4.x, c4.y, c4.width, c4.height)) {
+                    colorPickerTarget = ColorPickerTarget.ESP_COLOR_4
+                    return true
+                }
+            }
+        } else if (module()?.id == "world.jump_circles") {
+            val s = dev.hypnosia.visual.world.jump.JumpCircleSettings
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)) {
+                s.setEnabled(!s.enabled()); module()?.enabled = s.enabled(); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)) {
+                s.setOnlyF5(!s.onlyF5()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)) {
+                s.setTexture(s.texture().next()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 40.0f)) {
+                s.setFadeMode(s.fadeMode().next()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_SIZE; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_LIFETIME; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_ALPHA; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_ROTATION; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 459.0f, 258.0f, 40.0f)) {
+                val cur = s.colorCount(); s.setColorCount(if (cur >= 4) 1 else cur + 1); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 507.0f, 258.0f, 40.0f)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                s.setGradientMode(entries[(s.gradientMode().ordinal + 1) % entries.size]); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 555.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_ANIM_SPEED; updateWorldSlider(mouseX); return true
+            }
+            val colorCount = s.colorCount()
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 603.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_CIRCLE_1; return true }
+            if (colorCount >= 2 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 651.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_CIRCLE_2; return true }
+            if (colorCount >= 3 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 699.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_CIRCLE_3; return true }
+            if (colorCount >= 4 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 747.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_CIRCLE_4; return true }
+            // Particle sub-section
+            val circleColorOff = (colorCount - 1) * 48.0f
+            val pBaseY = 603.0f + circleColorOff + 48.0f
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pBaseY, 258.0f, 40.0f)) {
+                s.setParticlesEnabled(!s.particlesEnabled()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pBaseY + 48.0f, 258.0f, 40.0f)) {
+                s.setPOnlyF5(!s.pOnlyF5()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pBaseY + 96.0f, 258.0f, 40.0f)) {
+                jumpPTextureListOpen = !jumpPTextureListOpen; return true
+            }
+            val jpListOff = if (jumpPTextureListOpen) jumpPTextureListHeight() else 0.0f
+            if (jumpPTextureListOpen) {
+                val textures = WorldParticleTexture.entriesList()
+                for ((i, tex) in textures.withIndex()) {
+                    val iy = bounds.y + pBaseY + 136.0f + i * PARTICLE_TEX_ROW_H
+                    if (contains(mouseX, contentMouseY, bounds.x + 17.0f, iy, 240.0f, PARTICLE_TEX_ROW_H)) {
+                        s.togglePTexture(tex); return true
+                    }
+                }
+            }
+            val pOff = pBaseY + 144.0f + jpListOff
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff, 258.0f, 40.0f)) {
+                val entries = dev.hypnosia.visual.world.particles.hit.HitGravityMode.entries
+                s.setPGravity(entries[(s.pGravity().ordinal + 1) % entries.size]); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 48.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_P_COUNT; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 96.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_P_FORCE; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 144.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_P_LIFETIME; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 192.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_P_SIZE; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 240.0f, 258.0f, 40.0f)) {
+                val cur = s.pColorCount(); s.setPColorCount(if (cur >= 4) 1 else cur + 1); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 288.0f, 258.0f, 40.0f)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                s.setPGradientMode(entries[(s.pGradientMode().ordinal + 1) % entries.size]); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 336.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.JUMP_P_ANIM_SPEED; updateWorldSlider(mouseX); return true
+            }
+            val pColorCount = s.pColorCount()
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 384.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_PARTICLE_1; return true }
+            if (pColorCount >= 2 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 432.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_PARTICLE_2; return true }
+            if (pColorCount >= 3 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 480.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_PARTICLE_3; return true }
+            if (pColorCount >= 4 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + pOff + 528.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.JUMP_PARTICLE_4; return true }
+        } else if (module()?.id == "world.trails") {
+            val s = dev.hypnosia.visual.world.trails.TrailSettings
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)) {
+                s.setEnabled(!s.enabled()); module()?.enabled = s.enabled(); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)) {
+                s.setOnlyF5(!s.onlyF5()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.TRAIL_LENGTH; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.TRAIL_WIDTH; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.TRAIL_ALPHA; updateWorldSlider(mouseX); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 40.0f)) {
+                val cur = s.colorCount(); s.setColorCount(if (cur >= 4) 1 else cur + 1); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 40.0f)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                s.setGradientMode(entries[(s.gradientMode().ordinal + 1) % entries.size]); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.TRAIL_ANIM_SPEED; updateWorldSlider(mouseX); return true
+            }
+            val colorCount = s.colorCount()
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 459.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.TRAIL_COLOR_1; return true }
+            if (colorCount >= 2 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 507.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.TRAIL_COLOR_2; return true }
+            if (colorCount >= 3 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 555.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.TRAIL_COLOR_3; return true }
+            if (colorCount >= 4 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 603.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.TRAIL_COLOR_4; return true }
+        } else if (module()?.id == "world.hit_color") {
+            val s = dev.hypnosia.visual.world.hitcolor.HitColorSettings
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)) {
+                s.setEnabled(!s.enabled()); module()?.enabled = s.enabled(); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)) {
+                val cur = s.colorCount(); s.setColorCount(if (cur >= 4) 1 else cur + 1); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)) {
+                val entries = CosmeticSettings.GradientMode.entries
+                s.setGradientMode(entries[(s.gradientMode().ordinal + 1) % entries.size]); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.HIT_COLOR_ANIM_SPEED; updateWorldSlider(mouseX); return true
+            }
+            val colorCount = s.colorCount()
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.HIT_COLOR_1; return true }
+            if (colorCount >= 2 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.HIT_COLOR_2; return true }
+            if (colorCount >= 3 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.HIT_COLOR_3; return true }
+            if (colorCount >= 4 && contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 40.0f)) { colorPickerTarget = ColorPickerTarget.HIT_COLOR_4; return true }
+        } else if (module()?.id == "hud.now_playing") {
+            val s = dev.hypnosia.hud.NowPlayingSettings
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)) {
+                s.setEnabled(!s.isEnabled()); module()?.enabled = s.isEnabled(); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)) {
+                s.setOnlyWhenPlaying(!s.onlyWhenPlaying()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)) {
+                s.setShowCover(!s.showCover()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 40.0f)) {
+                s.setShowControls(!s.showControls()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 40.0f)) {
+                s.setShowProgress(!s.showProgress()); return true
+            }
+            if (contains(mouseX, contentMouseY, bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 48.0f)) {
+                activeWorldSlider = WorldSliderKind.NOW_PLAYING_ALPHA; updateWorldSlider(mouseX); return true
+            }
+        } else if (module()?.id == "other.friends") {
             val levelRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
             val nameRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
             if (contains(mouseX, contentMouseY, levelRect.x, levelRect.y, levelRect.width, levelRect.height)) {
@@ -436,6 +929,172 @@ class V2ModuleSettingsDrawer(
                 activeAspectSlider = true
                 updateAspectSlider(mouseX)
                 return true
+            }
+        } else if (module()?.id == "visuals.cosmetics.china_hat") {
+            val chinaHatRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
+            val colorCountRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
+            val gradientRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)
+            val speedRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 48.0f)
+            val alphaRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 48.0f)
+            val yOffRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 48.0f)
+            val widthRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 48.0f)
+            val heightRect = Rect(bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 48.0f)
+            val color1Rect = Rect(bounds.x + 11.0f, bounds.y + 459.0f, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, chinaHatRect.x, chinaHatRect.y, chinaHatRect.width, chinaHatRect.height)) {
+                CosmeticSettings.setChinaHatEnabled(!CosmeticSettings.chinaHatEnabled())
+                return true
+            }
+            if (contains(mouseX, contentMouseY, colorCountRect.x, colorCountRect.y, colorCountRect.width, colorCountRect.height)) {
+                val next = CosmeticSettings.chinaHatColorCount() % 4 + 1
+                CosmeticSettings.setChinaHatColorCount(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, gradientRect.x, gradientRect.y, gradientRect.width, gradientRect.height)) {
+                val next = when (CosmeticSettings.chinaHatGradientMode()) {
+                    CosmeticSettings.GradientMode.STATIC -> CosmeticSettings.GradientMode.FLUID
+                    CosmeticSettings.GradientMode.FLUID -> CosmeticSettings.GradientMode.CHROMA
+                    CosmeticSettings.GradientMode.CHROMA -> CosmeticSettings.GradientMode.STATIC
+                }
+                CosmeticSettings.setChinaHatGradientMode(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, speedRect.x, speedRect.y, speedRect.width, speedRect.height)) {
+                if (CosmeticSettings.chinaHatGradientMode() != CosmeticSettings.GradientMode.STATIC) {
+                    activeCosmeticSlider = CosmeticSliderKind.ANIM_SPEED
+                    updateCosmeticSlider(mouseX)
+                }
+                return true
+            }
+            if (contains(mouseX, contentMouseY, alphaRect.x, alphaRect.y, alphaRect.width, alphaRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.ALPHA
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, yOffRect.x, yOffRect.y, yOffRect.width, yOffRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.Y_OFFSET
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, widthRect.x, widthRect.y, widthRect.width, widthRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.WIDTH
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, heightRect.x, heightRect.y, heightRect.width, heightRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.HEIGHT
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, color1Rect.x, color1Rect.y, color1Rect.width, color1Rect.height)) {
+                colorPickerTarget = ColorPickerTarget.COSMETICS_CHINA_HAT
+                return true
+            }
+            if (CosmeticSettings.chinaHatColorCount() >= 2) {
+                val color2Rect = Rect(bounds.x + 11.0f, bounds.y + 507.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, color2Rect.x, color2Rect.y, color2Rect.width, color2Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_CHINA_HAT_2
+                    return true
+                }
+            }
+            if (CosmeticSettings.chinaHatColorCount() >= 3) {
+                val color3Rect = Rect(bounds.x + 11.0f, bounds.y + 555.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, color3Rect.x, color3Rect.y, color3Rect.width, color3Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_CHINA_HAT_3
+                    return true
+                }
+            }
+            if (CosmeticSettings.chinaHatColorCount() >= 4) {
+                val color4Rect = Rect(bounds.x + 11.0f, bounds.y + 603.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, color4Rect.x, color4Rect.y, color4Rect.width, color4Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_CHINA_HAT_4
+                    return true
+                }
+            }
+        } else if (module()?.id == "visuals.cosmetics.nimbus") {
+            val nimbusRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
+            val nimbusColorCountRect = Rect(bounds.x + 11.0f, bounds.y + 123.0f, 258.0f, 40.0f)
+            val nimbusGradientRect = Rect(bounds.x + 11.0f, bounds.y + 171.0f, 258.0f, 40.0f)
+            val nimbusSpeedRect = Rect(bounds.x + 11.0f, bounds.y + 219.0f, 258.0f, 48.0f)
+            val nimbusAlphaRect = Rect(bounds.x + 11.0f, bounds.y + 267.0f, 258.0f, 48.0f)
+            val nimbusYOffsetRect = Rect(bounds.x + 11.0f, bounds.y + 315.0f, 258.0f, 48.0f)
+            val nimbusRadiusRect = Rect(bounds.x + 11.0f, bounds.y + 363.0f, 258.0f, 48.0f)
+            val nimbusTubeRect = Rect(bounds.x + 11.0f, bounds.y + 411.0f, 258.0f, 48.0f)
+            val nimbusTiltRect = Rect(bounds.x + 11.0f, bounds.y + 459.0f, 258.0f, 48.0f)
+            val nimbusColor1Rect = Rect(bounds.x + 11.0f, bounds.y + 507.0f, 258.0f, 40.0f)
+            if (contains(mouseX, contentMouseY, nimbusRect.x, nimbusRect.y, nimbusRect.width, nimbusRect.height)) {
+                CosmeticSettings.setNimbusEnabled(!CosmeticSettings.nimbusEnabled())
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusColorCountRect.x, nimbusColorCountRect.y, nimbusColorCountRect.width, nimbusColorCountRect.height)) {
+                val next = CosmeticSettings.nimbusColorCount() % 4 + 1
+                CosmeticSettings.setNimbusColorCount(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusGradientRect.x, nimbusGradientRect.y, nimbusGradientRect.width, nimbusGradientRect.height)) {
+                val next = when (CosmeticSettings.nimbusGradientMode()) {
+                    CosmeticSettings.GradientMode.STATIC -> CosmeticSettings.GradientMode.FLUID
+                    CosmeticSettings.GradientMode.FLUID -> CosmeticSettings.GradientMode.CHROMA
+                    CosmeticSettings.GradientMode.CHROMA -> CosmeticSettings.GradientMode.STATIC
+                }
+                CosmeticSettings.setNimbusGradientMode(next)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusSpeedRect.x, nimbusSpeedRect.y, nimbusSpeedRect.width, nimbusSpeedRect.height)) {
+                if (CosmeticSettings.nimbusGradientMode() != CosmeticSettings.GradientMode.STATIC) {
+                    activeCosmeticSlider = CosmeticSliderKind.NIMBUS_ANIM_SPEED
+                    updateCosmeticSlider(mouseX)
+                }
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusAlphaRect.x, nimbusAlphaRect.y, nimbusAlphaRect.width, nimbusAlphaRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.NIMBUS_ALPHA
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusYOffsetRect.x, nimbusYOffsetRect.y, nimbusYOffsetRect.width, nimbusYOffsetRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.NIMBUS_Y_OFFSET
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusRadiusRect.x, nimbusRadiusRect.y, nimbusRadiusRect.width, nimbusRadiusRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.NIMBUS_RADIUS
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusTubeRect.x, nimbusTubeRect.y, nimbusTubeRect.width, nimbusTubeRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.NIMBUS_TUBE_RADIUS
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusTiltRect.x, nimbusTiltRect.y, nimbusTiltRect.width, nimbusTiltRect.height)) {
+                activeCosmeticSlider = CosmeticSliderKind.NIMBUS_TILT
+                updateCosmeticSlider(mouseX)
+                return true
+            }
+            if (contains(mouseX, contentMouseY, nimbusColor1Rect.x, nimbusColor1Rect.y, nimbusColor1Rect.width, nimbusColor1Rect.height)) {
+                colorPickerTarget = ColorPickerTarget.COSMETICS_NIMBUS
+                return true
+            }
+            if (CosmeticSettings.nimbusColorCount() >= 2) {
+                val nimbusColor2Rect = Rect(bounds.x + 11.0f, bounds.y + 555.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, nimbusColor2Rect.x, nimbusColor2Rect.y, nimbusColor2Rect.width, nimbusColor2Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_NIMBUS_2
+                    return true
+                }
+            }
+            if (CosmeticSettings.nimbusColorCount() >= 3) {
+                val nimbusColor3Rect = Rect(bounds.x + 11.0f, bounds.y + 603.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, nimbusColor3Rect.x, nimbusColor3Rect.y, nimbusColor3Rect.width, nimbusColor3Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_NIMBUS_3
+                    return true
+                }
+            }
+            if (CosmeticSettings.nimbusColorCount() >= 4) {
+                val nimbusColor4Rect = Rect(bounds.x + 11.0f, bounds.y + 651.0f, 258.0f, 40.0f)
+                if (contains(mouseX, contentMouseY, nimbusColor4Rect.x, nimbusColor4Rect.y, nimbusColor4Rect.width, nimbusColor4Rect.height)) {
+                    colorPickerTarget = ColorPickerTarget.COSMETICS_NIMBUS_4
+                    return true
+                }
             }
         } else if (module()?.id == "client.theme") {
             val modeRect = Rect(bounds.x + 11.0f, bounds.y + 75.0f, 258.0f, 40.0f)
@@ -531,6 +1190,10 @@ class V2ModuleSettingsDrawer(
             updateAspectSlider(mouseX)
             return true
         }
+        if (activeCosmeticSlider != null) {
+            updateCosmeticSlider(mouseX)
+            return true
+        }
         if (activeImageSlider != null) {
             updateImageSlider(mouseX)
             return true
@@ -539,11 +1202,12 @@ class V2ModuleSettingsDrawer(
     }
 
     fun mouseReleased(mouseX: Float, mouseY: Float, button: Int): Boolean {
-        val wasDragging = activeHudSlider != null || activeTargetSlider != null || activeWorldSlider != null || activeAspectSlider || activeImageSlider != null || colorPickerDrag != null
+        val wasDragging = activeHudSlider != null || activeTargetSlider != null || activeWorldSlider != null || activeAspectSlider || activeCosmeticSlider != null || activeImageSlider != null || colorPickerDrag != null
         activeHudSlider = null
         activeTargetSlider = null
         activeWorldSlider = null
         activeAspectSlider = false
+        activeCosmeticSlider = null
         activeImageSlider = null
         colorPickerDrag = null
         if (pendingImageChromaReload) {
@@ -626,6 +1290,9 @@ class V2ModuleSettingsDrawer(
             streamerReplacementEditing = false
             iconPaletteOpen = false
             fogPaletteOpen = false
+            particleTextureListOpen = false
+            hitTextureListOpen = false
+            jumpPTextureListOpen = false
             themePaletteTarget = null
             colorPickerTarget = null
             colorPickerDrag = null
@@ -645,10 +1312,20 @@ class V2ModuleSettingsDrawer(
             "hud.cooldowns", "hud.potions", "hud.hotkeys" -> 223.0f
             "client.icons" -> if (iconPaletteOpen) 269.0f else 163.0f
             "world.custom_fog" -> if (fogPaletteOpen) 475.0f else 366.0f
+            "world.particles" -> 835.0f + (WorldParticleSettings.colorCount() - 1) * 48.0f + (if (particleTextureListOpen) particleTextureListHeight() else 0.0f)
+            "world.hit_particles" -> 643.0f + (dev.hypnosia.visual.world.particles.hit.HitParticleSettings.colorCount() - 1) * 48.0f + (if (hitTextureListOpen) hitTextureListHeight() else 0.0f)
+            "world.target_esp" -> 691.0f + (dev.hypnosia.visual.world.esp.TargetEspSettings.colorCount() - 1) * 48.0f
+            "world.jump_circles" -> 1131.0f + (dev.hypnosia.visual.world.jump.JumpCircleSettings.colorCount() - 1) * 48.0f + (dev.hypnosia.visual.world.jump.JumpCircleSettings.pColorCount() - 1) * 48.0f + (if (jumpPTextureListOpen) jumpPTextureListHeight() else 0.0f)
+            "world.trails" -> 595.0f + (dev.hypnosia.visual.world.trails.TrailSettings.colorCount() - 1) * 48.0f
+            "world.hit_color" -> 451.0f + (dev.hypnosia.visual.world.hitcolor.HitColorSettings.colorCount() - 1) * 48.0f
+            "hud.now_playing" -> 355.0f
             "client.theme" -> if (themePaletteTarget != null) 553.0f else 445.0f
             "other.friends" -> 195.0f
             "other.streamer_mode" -> 235.0f
             "visuals.aspect_ratio" -> 231.0f
+            "visuals.cosmetics" -> 100.0f
+            "visuals.cosmetics.china_hat" -> 499.0f + (CosmeticSettings.chinaHatColorCount() - 1) * 48.0f
+            "visuals.cosmetics.nimbus" -> 651.0f + (CosmeticSettings.nimbusColorCount() - 1) * 48.0f
             "client.images" -> imageSettingsContentHeight()
             else -> 289.0f
         }
@@ -681,12 +1358,30 @@ class V2ModuleSettingsDrawer(
             renderIconSettings(context)
         } else if (currentModule?.id == "world.custom_fog") {
             renderCustomFogSettings(context)
+        } else if (currentModule?.id == "world.particles") {
+            renderWorldParticleSettings(context)
+        } else if (currentModule?.id == "world.hit_particles") {
+            renderHitParticleSettings(context)
+        } else if (currentModule?.id == "world.target_esp") {
+            renderTargetEspSettings(context)
+        } else if (currentModule?.id == "world.jump_circles") {
+            renderJumpCircleSettings(context)
+        } else if (currentModule?.id == "world.trails") {
+            renderTrailSettings(context)
+        } else if (currentModule?.id == "world.hit_color") {
+            renderHitColorSettings(context)
+        } else if (currentModule?.id == "hud.now_playing") {
+            renderNowPlayingSettings(context)
         } else if (currentModule?.id == "other.friends") {
             renderFriendsSettings(context)
         } else if (currentModule?.id == "other.streamer_mode") {
             renderStreamerModeSettings(context)
         } else if (currentModule?.id == "visuals.aspect_ratio") {
             renderAspectRatioSettings(context)
+        } else if (currentModule?.id == "visuals.cosmetics.china_hat") {
+            renderCosmeticSettings(context)
+        } else if (currentModule?.id == "visuals.cosmetics.nimbus") {
+            renderNimbusSettings(context)
         } else if (currentModule?.id == "client.theme") {
             renderThemeSettings(context)
         } else if (currentModule?.id == "client.images") {
@@ -998,6 +1693,360 @@ class V2ModuleSettingsDrawer(
         }
     }
 
+    private fun renderWorldParticleSettings(context: DrawContext) {
+        val mode = WorldParticleSettings.mode()
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 75.0f,
+            label = "World Particles",
+            labelOffX = 9.0f,
+            value = if (WorldParticleSettings.enabled()) "On" else "Off",
+            valueOffX = 164.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 123.0f,
+            label = "Mode",
+            labelOffX = 9.0f,
+            value = mode.displayName,
+            valueOffX = 164.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        val activeCount = WorldParticleSettings.activeTextures().size
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 171.0f,
+            label = "Textures ($activeCount)",
+            labelOffX = 9.0f,
+            value = if (particleTextureListOpen) "▲" else "▼",
+            valueOffX = 220.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        val listOff = if (particleTextureListOpen) particleTextureListHeight() else 0.0f
+        if (particleTextureListOpen) {
+            val textures = WorldParticleTexture.entriesList()
+            val lx = bounds.x + 17.0f
+            for ((i, tex) in textures.withIndex()) {
+                val ly = bounds.y + 211.0f + i * PARTICLE_TEX_ROW_H
+                val on = WorldParticleSettings.isTextureActive(tex)
+                drawText(context, tex.displayName, lx + 4.0f, ly + 4.0f, 11.0f, if (on) 0xFFE7E7EA.toInt() else 0xFF6E6E78.toInt())
+                drawText(context, if (on) "ON" else "OFF", lx + 195.0f, ly + 4.0f, 11.0f, if (on) 0xFF4ADE80.toInt() else 0xFF8E8E98.toInt())
+            }
+        }
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 219.0f + listOff,
+            "Count",
+            "${WorldParticleSettings.count()}",
+            WorldParticleSettings.count() / 200.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 267.0f + listOff,
+            "Spawn Rate",
+            "${WorldParticleSettings.spawnRate()}",
+            (WorldParticleSettings.spawnRate() - 1) / 19.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 315.0f + listOff,
+            "Size",
+            String.format(Locale.US, "%.2f", WorldParticleSettings.size()),
+            (WorldParticleSettings.size() - 0.01f) / 1.99f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 363.0f + listOff,
+            "Speed",
+            String.format(Locale.US, "%.3f", WorldParticleSettings.speed()),
+            WorldParticleSettings.speed() / 0.2f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 411.0f + listOff,
+            "Life",
+            String.format(Locale.US, "%.1f", WorldParticleSettings.life()),
+            (WorldParticleSettings.life() - 1.0f) / 14.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 459.0f + listOff,
+            "Gravity",
+            String.format(Locale.US, "%.3f", WorldParticleSettings.gravity()),
+            (WorldParticleSettings.gravity() + 0.02f) / 0.04f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 507.0f + listOff,
+            "Alpha",
+            "${WorldParticleSettings.alpha()}",
+            WorldParticleSettings.alpha() / 255.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 555.0f + listOff,
+            "Height",
+            "${WorldParticleSettings.spawnHeight()}",
+            (WorldParticleSettings.spawnHeight() - 5) / 25.0f,
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 603.0f + listOff,
+            label = "Gravity Mode",
+            labelOffX = 9.0f,
+            value = WorldParticleSettings.gravityMode().displayName,
+            valueOffX = 164.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        val pColorCount = WorldParticleSettings.colorCount()
+        val pMode = WorldParticleSettings.gradientMode()
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 651.0f + listOff,
+            label = "Color Count",
+            labelOffX = 9.0f,
+            value = "$pColorCount",
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 699.0f + listOff,
+            label = "Gradient",
+            labelOffX = 9.0f,
+            value = when (pMode) {
+                CosmeticSettings.GradientMode.STATIC -> "Static"
+                CosmeticSettings.GradientMode.FLUID -> "Fluid"
+                CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+            },
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 747.0f + listOff,
+            "Anim Speed",
+            String.format(Locale.US, "%.1f", WorldParticleSettings.animSpeed()),
+            WorldParticleSettings.animSpeed() / 5.0f,
+        )
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 795.0f + listOff, "Color 1", WorldParticleSettings.color1())
+        if (pColorCount >= 2) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 843.0f + listOff, "Color 2", WorldParticleSettings.color2())
+        }
+        if (pColorCount >= 3) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 891.0f + listOff, "Color 3", WorldParticleSettings.color3())
+        }
+        if (pColorCount >= 4) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 939.0f + listOff, "Color 4", WorldParticleSettings.color4())
+        }
+    }
+
+    private fun particleTextureListHeight(): Float = WorldParticleTexture.entriesList().size * PARTICLE_TEX_ROW_H
+    private fun hitTextureListHeight(): Float = WorldParticleTexture.entriesList().size * PARTICLE_TEX_ROW_H
+
+    private fun renderHitParticleSettings(context: DrawContext) {
+        val s = dev.hypnosia.visual.world.particles.hit.HitParticleSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Hit Particles", 9.0f, if (s.enabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Trigger", 9.0f, s.trigger().displayName, 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Gravity", 9.0f, s.gravity().displayName, 164.0f, 0xFFFF2F86.toInt())
+        val activeCount = s.activeTextures().size
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Textures ($activeCount)", 9.0f, if (hitTextureListOpen) "▲" else "▼", 220.0f, 0xFFFF2F86.toInt())
+        val hitListOff = if (hitTextureListOpen) hitTextureListHeight() else 0.0f
+        if (hitTextureListOpen) {
+            val textures = WorldParticleTexture.entriesList()
+            val lx = bounds.x + 17.0f
+            for ((i, tex) in textures.withIndex()) {
+                val ly = bounds.y + 259.0f + i * PARTICLE_TEX_ROW_H
+                val on = s.isTextureActive(tex)
+                drawText(context, tex.displayName, lx + 4.0f, ly + 4.0f, 11.0f, if (on) 0xFFE7E7EA.toInt() else 0xFF6E6E78.toInt())
+                drawText(context, if (on) "ON" else "OFF", lx + 195.0f, ly + 4.0f, 11.0f, if (on) 0xFF4ADE80.toInt() else 0xFF8E8E98.toInt())
+            }
+        }
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 267.0f + hitListOff, "Count", "${s.count()}", (s.count() - 1) / 29.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 315.0f + hitListOff, "Force", String.format(Locale.US, "%.2f", s.force()), (s.force() - 0.1f) / 0.9f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 363.0f + hitListOff, "Lifetime", "${s.lifetime()}", (s.lifetime() - 5) / 55.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 411.0f + hitListOff, "Size", String.format(Locale.US, "%.2f", s.size()), (s.size() - 0.05f) / 0.95f)
+        val colorCount = s.colorCount()
+        val gradMode = s.gradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 459.0f + hitListOff, "Color Count", 9.0f, "$colorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 507.0f + hitListOff, "Gradient", 9.0f, when (gradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 555.0f + hitListOff, "Anim Speed", String.format(Locale.US, "%.1f", s.animSpeed()), s.animSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f + hitListOff, "Color 1", s.color1())
+        if (colorCount >= 2) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 651.0f + hitListOff, "Color 2", s.color2())
+        }
+        if (colorCount >= 3) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 699.0f + hitListOff, "Color 3", s.color3())
+        }
+        if (colorCount >= 4) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 747.0f + hitListOff, "Color 4", s.color4())
+        }
+    }
+
+    private fun renderTargetEspSettings(context: DrawContext) {
+        val s = dev.hypnosia.visual.world.esp.TargetEspSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Target ESP", 9.0f, if (s.enabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Texture", 9.0f, s.texture().displayName, 164.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Size", String.format(Locale.US, "%.2f", s.size()), (s.size() - 0.5f) / 4.5f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Lifetime", "${s.lifetime()}", (s.lifetime() - 10) / 90.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Alpha", "${s.alpha()}", (s.alpha() - 50) / 205.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Rotation", String.format(Locale.US, "%.1f", s.rotationSpeed()), s.rotationSpeed() / 5.0f)
+        val colorCount = s.colorCount()
+        val gradMode = s.gradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Color Count", 9.0f, "$colorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 411.0f, "Gradient", 9.0f, when (gradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 459.0f, "Anim Speed", String.format(Locale.US, "%.1f", s.animSpeed()), s.animSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 507.0f, "Color 1", s.color1())
+        if (colorCount >= 2) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 555.0f, "Color 2", s.color2())
+        }
+        if (colorCount >= 3) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f, "Color 3", s.color3())
+        }
+        if (colorCount >= 4) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 651.0f, "Color 4", s.color4())
+        }
+    }
+
+    private fun jumpPTextureListHeight(): Float = WorldParticleTexture.entriesList().size * PARTICLE_TEX_ROW_H
+
+    private fun renderJumpCircleSettings(context: DrawContext) {
+        val s = dev.hypnosia.visual.world.jump.JumpCircleSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Jump Circles", 9.0f, if (s.enabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Only F5", 9.0f, if (s.onlyF5()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Texture", 9.0f, s.texture().displayName, 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Fade Mode", 9.0f, s.fadeMode().displayName, 164.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Size", String.format(Locale.US, "%.2f", s.size()), (s.size() - 1.0f) / 5.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Lifetime", "${s.lifetime()}", (s.lifetime() - 10) / 50.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Alpha", "${s.alpha()}", (s.alpha() - 50) / 205.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 411.0f, "Rotation", String.format(Locale.US, "%.1f", s.rotationSpeed()), s.rotationSpeed() / 5.0f)
+        val colorCount = s.colorCount()
+        val gradMode = s.gradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 459.0f, "Color Count", 9.0f, "$colorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 507.0f, "Gradient", 9.0f, when (gradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 555.0f, "Anim Speed", String.format(Locale.US, "%.1f", s.animSpeed()), s.animSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f, "Color 1", s.color1())
+        if (colorCount >= 2) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 651.0f, "Color 2", s.color2())
+        if (colorCount >= 3) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 699.0f, "Color 3", s.color3())
+        if (colorCount >= 4) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 747.0f, "Color 4", s.color4())
+
+        // Particle sub-section
+        val circleColorOff = (colorCount - 1) * 48.0f
+        val pBaseY = 603.0f + circleColorOff + 48.0f
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pBaseY, "Jump Particles", 9.0f, if (s.particlesEnabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pBaseY + 48.0f, "Only F5", 9.0f, if (s.pOnlyF5()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        val activeCount = s.pActiveTextures().size
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pBaseY + 96.0f, "Textures ($activeCount)", 9.0f, if (jumpPTextureListOpen) "▲" else "▼", 220.0f, 0xFFFF2F86.toInt())
+        val jpListOff = if (jumpPTextureListOpen) jumpPTextureListHeight() else 0.0f
+        if (jumpPTextureListOpen) {
+            val textures = WorldParticleTexture.entriesList()
+            val lx = bounds.x + 17.0f
+            for ((i, tex) in textures.withIndex()) {
+                val ly = bounds.y + pBaseY + 136.0f + i * PARTICLE_TEX_ROW_H
+                val on = s.isPTextureActive(tex)
+                drawText(context, tex.displayName, lx + 4.0f, ly + 4.0f, 11.0f, if (on) 0xFFE7E7EA.toInt() else 0xFF6E6E78.toInt())
+                drawText(context, if (on) "ON" else "OFF", lx + 195.0f, ly + 4.0f, 11.0f, if (on) 0xFF4ADE80.toInt() else 0xFF8E8E98.toInt())
+            }
+        }
+        val pOff = pBaseY + 144.0f + jpListOff
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pOff, "Gravity", 9.0f, s.pGravity().displayName, 164.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + pOff + 48.0f, "Count", "${s.pCount()}", (s.pCount() - 1) / 29.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + pOff + 96.0f, "Force", String.format(Locale.US, "%.2f", s.pForce()), (s.pForce() - 0.1f) / 0.9f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + pOff + 144.0f, "Lifetime", "${s.pLifetime()}", (s.pLifetime() - 5) / 55.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + pOff + 192.0f, "Size", String.format(Locale.US, "%.2f", s.pSize()), (s.pSize() - 0.05f) / 0.95f)
+        val pColorCount = s.pColorCount()
+        val pGradMode = s.pGradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pOff + 240.0f, "Color Count", 9.0f, "$pColorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + pOff + 288.0f, "Gradient", 9.0f, when (pGradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + pOff + 336.0f, "Anim Speed", String.format(Locale.US, "%.1f", s.pAnimSpeed()), s.pAnimSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + pOff + 384.0f, "Color 1", s.pColor1())
+        if (pColorCount >= 2) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + pOff + 432.0f, "Color 2", s.pColor2())
+        if (pColorCount >= 3) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + pOff + 480.0f, "Color 3", s.pColor3())
+        if (pColorCount >= 4) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + pOff + 528.0f, "Color 4", s.pColor4())
+    }
+
+    private fun renderTrailSettings(context: DrawContext) {
+        val s = dev.hypnosia.visual.world.trails.TrailSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Trails", 9.0f, if (s.enabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Only F5", 9.0f, if (s.onlyF5()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Length", "${s.length()}", (s.length() - 10) / 90.0f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Width", String.format(Locale.US, "%.2f", s.width()), (s.width() - 0.1f) / 1.9f)
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Alpha", "${s.alpha()}", (s.alpha() - 50) / 205.0f)
+        val colorCount = s.colorCount()
+        val gradMode = s.gradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Color Count", 9.0f, "$colorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Gradient", 9.0f, when (gradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 411.0f, "Anim Speed", String.format(Locale.US, "%.1f", s.animSpeed()), s.animSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 459.0f, "Color 1", s.color1())
+        if (colorCount >= 2) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 507.0f, "Color 2", s.color2())
+        if (colorCount >= 3) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 555.0f, "Color 3", s.color3())
+        if (colorCount >= 4) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f, "Color 4", s.color4())
+    }
+
+    private fun renderHitColorSettings(context: DrawContext) {
+        val s = dev.hypnosia.visual.world.hitcolor.HitColorSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Hit Color", 9.0f, if (s.enabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        val colorCount = s.colorCount()
+        val gradMode = s.gradientMode()
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Color Count", 9.0f, "$colorCount", 206.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Gradient", 9.0f, when (gradMode) {
+            CosmeticSettings.GradientMode.STATIC -> "Static"
+            CosmeticSettings.GradientMode.FLUID -> "Fluid"
+            CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+        }, 206.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Anim Speed", String.format(Locale.US, "%.1f", s.animSpeed()), s.animSpeed() / 5.0f)
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Color 1", s.color1())
+        if (colorCount >= 2) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Color 2", s.color2())
+        if (colorCount >= 3) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 363.0f, "Color 3", s.color3())
+        if (colorCount >= 4) drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 411.0f, "Color 4", s.color4())
+    }
+
+    private fun renderNowPlayingSettings(context: DrawContext) {
+        val s = dev.hypnosia.hud.NowPlayingSettings
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 75.0f, "Now Playing", 9.0f, if (s.isEnabled()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 123.0f, "Hide When Idle", 9.0f, if (s.onlyWhenPlaying()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 171.0f, "Show Cover", 9.0f, if (s.showCover()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 219.0f, "Show Controls", 9.0f, if (s.showControls()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawSimpleRow(context, bounds.x + 11.0f, bounds.y + 267.0f, "Show Progress", 9.0f, if (s.showProgress()) "On" else "Off", 164.0f, 0xFFFF2F86.toInt())
+        drawValueSliderRow(context, bounds.x + 11.0f, bounds.y + 315.0f, "Alpha", "${s.alpha()}", (s.alpha() - 50) / 205.0f)
+    }
+
     private fun renderFriendsSettings(context: DrawContext) {
         drawSimpleRow(
             context = context,
@@ -1038,6 +2087,192 @@ class V2ModuleSettingsDrawer(
         drawGroupCard(context, bounds.x + 11.0f, bounds.y + 175.0f, "Streamer Mode")
         drawText(context, "Level 1 hides only your nickname.", bounds.x + 21.0f, bounds.y + 209.0f, 12.0f, 0xFFE7E7EA.toInt())
         drawText(context, "Level 2 replaces all player names.", bounds.x + 21.0f, bounds.y + 225.0f, 12.0f, 0xFF8E8E98.toInt())
+    }
+
+    private fun renderCosmeticSettings(context: DrawContext) {
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 75.0f,
+            label = "China Hat",
+            labelOffX = 9.0f,
+            value = if (CosmeticSettings.chinaHatEnabled()) "On" else "Off",
+            valueOffX = 164.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        val colorCount = CosmeticSettings.chinaHatColorCount()
+        val mode = CosmeticSettings.chinaHatGradientMode()
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 123.0f,
+            label = "Color Count",
+            labelOffX = 9.0f,
+            value = "$colorCount",
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 171.0f,
+            label = "Gradient",
+            labelOffX = 9.0f,
+            value = when (mode) {
+                CosmeticSettings.GradientMode.STATIC -> "Static"
+                CosmeticSettings.GradientMode.FLUID -> "Fluid"
+                CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+            },
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 219.0f,
+            "Speed",
+            String.format(Locale.US, "%.1f", CosmeticSettings.chinaHatAnimSpeed()),
+            CosmeticSettings.chinaHatAnimSpeed() / 5.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 267.0f,
+            "Alpha",
+            "${CosmeticSettings.chinaHatAlpha()}",
+            CosmeticSettings.chinaHatAlpha() / 255.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 315.0f,
+            "Y Offset",
+            String.format(Locale.US, "%.2f", CosmeticSettings.chinaHatY()),
+            ((CosmeticSettings.chinaHatY() + 2.0f) / 4.0f).coerceIn(0f, 1f),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 363.0f,
+            "Width",
+            String.format(Locale.US, "%.2f", CosmeticSettings.chinaHatWidth()),
+            ((CosmeticSettings.chinaHatWidth()) / 2.0f).coerceIn(0f, 1f),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 411.0f,
+            "Height",
+            String.format(Locale.US, "%.2f", CosmeticSettings.chinaHatHeight()),
+            ((-CosmeticSettings.chinaHatHeight()) / 2.0f).coerceIn(0f, 1f),
+        )
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 459.0f, "Color 1", CosmeticSettings.chinaHatColor1())
+        if (colorCount >= 2) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 507.0f, "Color 2", CosmeticSettings.chinaHatColor2())
+        }
+        if (colorCount >= 3) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 555.0f, "Color 3", CosmeticSettings.chinaHatColor3())
+        }
+        if (colorCount >= 4) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f, "Color 4", CosmeticSettings.chinaHatColor4())
+        }
+    }
+
+    private fun renderNimbusSettings(context: DrawContext) {
+        val nimbusColorCount = CosmeticSettings.nimbusColorCount()
+        val nimbusMode = CosmeticSettings.nimbusGradientMode()
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 75.0f,
+            label = "Nimbus",
+            labelOffX = 9.0f,
+            value = if (CosmeticSettings.nimbusEnabled()) "On" else "Off",
+            valueOffX = 164.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 123.0f,
+            label = "Color Count",
+            labelOffX = 9.0f,
+            value = "$nimbusColorCount",
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawSimpleRow(
+            context = context,
+            x = bounds.x + 11.0f,
+            y = bounds.y + 171.0f,
+            label = "Gradient",
+            labelOffX = 9.0f,
+            value = when (nimbusMode) {
+                CosmeticSettings.GradientMode.STATIC -> "Static"
+                CosmeticSettings.GradientMode.FLUID -> "Fluid"
+                CosmeticSettings.GradientMode.CHROMA -> "Chroma"
+            },
+            valueOffX = 206.0f,
+            valueColor = 0xFFFF2F86.toInt(),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 219.0f,
+            "Speed",
+            String.format(Locale.US, "%.1f", CosmeticSettings.nimbusAnimSpeed()),
+            CosmeticSettings.nimbusAnimSpeed() / 5.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 267.0f,
+            "Alpha",
+            "${CosmeticSettings.nimbusAlpha()}",
+            CosmeticSettings.nimbusAlpha() / 255.0f,
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 315.0f,
+            "Y Offset",
+            String.format(Locale.US, "%.2f", CosmeticSettings.nimbusY()),
+            ((CosmeticSettings.nimbusY() + 2.0f) / 4.0f).coerceIn(0f, 1f),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 363.0f,
+            "Radius",
+            String.format(Locale.US, "%.2f", CosmeticSettings.nimbusRadius()),
+            (CosmeticSettings.nimbusRadius() / 2.0f).coerceIn(0f, 1f),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 411.0f,
+            "Tube",
+            String.format(Locale.US, "%.2f", CosmeticSettings.nimbusTubeRadius()),
+            (CosmeticSettings.nimbusTubeRadius() / 0.5f).coerceIn(0f, 1f),
+        )
+        drawValueSliderRow(
+            context,
+            bounds.x + 11.0f,
+            bounds.y + 459.0f,
+            "Tilt",
+            String.format(Locale.US, "%.0f°", Math.toDegrees(CosmeticSettings.nimbusTilt().toDouble())),
+            ((CosmeticSettings.nimbusTilt() + 1.57f) / 3.14f).coerceIn(0f, 1f),
+        )
+        drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 507.0f, "Color 1", CosmeticSettings.nimbusColor1())
+        if (nimbusColorCount >= 2) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 555.0f, "Color 2", CosmeticSettings.nimbusColor2())
+        }
+        if (nimbusColorCount >= 3) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 603.0f, "Color 3", CosmeticSettings.nimbusColor3())
+        }
+        if (nimbusColorCount >= 4) {
+            drawWorldColorRow(context, bounds.x + 11.0f, bounds.y + 651.0f, "Color 4", CosmeticSettings.nimbusColor4())
+        }
     }
 
     private fun renderAspectRatioSettings(context: DrawContext) {
@@ -1250,6 +2485,41 @@ class V2ModuleSettingsDrawer(
             WorldSliderKind.FOG_DISTANCE -> WorldVisualSettings.setFogDistanceFromSlider(value)
             WorldSliderKind.FOG_STRENGTH -> WorldVisualSettings.setFogStrengthFromSlider(value)
             WorldSliderKind.FOG_SOFTNESS -> WorldVisualSettings.setFogSoftnessFromSlider(value)
+            WorldSliderKind.PARTICLE_COUNT -> WorldParticleSettings.setCount((value * 200).toInt())
+            WorldSliderKind.PARTICLE_SPAWN_RATE -> WorldParticleSettings.setSpawnRate((1 + value * 19).toInt())
+            WorldSliderKind.PARTICLE_SIZE -> WorldParticleSettings.setSize(0.01f + value * 1.99f)
+            WorldSliderKind.PARTICLE_SPEED -> WorldParticleSettings.setSpeed(value * 0.2f)
+            WorldSliderKind.PARTICLE_LIFE -> WorldParticleSettings.setLife(1.0f + value * 14.0f)
+            WorldSliderKind.PARTICLE_GRAVITY -> WorldParticleSettings.setGravity((value - 0.5f) * 0.04f)
+            WorldSliderKind.PARTICLE_ALPHA -> WorldParticleSettings.setAlpha((value * 255).toInt())
+            WorldSliderKind.PARTICLE_ANIM_SPEED -> WorldParticleSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.PARTICLE_SPAWN_HEIGHT -> WorldParticleSettings.setSpawnHeight((5 + value * 25).toInt())
+            WorldSliderKind.HIT_COUNT -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setCount((1 + value * 29).toInt())
+            WorldSliderKind.HIT_FORCE -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setForce(0.1f + value * 0.9f)
+            WorldSliderKind.HIT_LIFETIME -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setLifetime((5 + value * 55).toInt())
+            WorldSliderKind.HIT_SIZE -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setSize(0.05f + value * 0.95f)
+            WorldSliderKind.HIT_ANIM_SPEED -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.ESP_SIZE -> dev.hypnosia.visual.world.esp.TargetEspSettings.setSize(0.5f + value * 4.5f)
+            WorldSliderKind.ESP_LIFETIME -> dev.hypnosia.visual.world.esp.TargetEspSettings.setLifetime((10 + value * 90).toInt())
+            WorldSliderKind.ESP_ALPHA -> dev.hypnosia.visual.world.esp.TargetEspSettings.setAlpha((50 + value * 205).toInt())
+            WorldSliderKind.ESP_ANIM_SPEED -> dev.hypnosia.visual.world.esp.TargetEspSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.ESP_ROTATION -> dev.hypnosia.visual.world.esp.TargetEspSettings.setRotationSpeed(value * 5.0f)
+            WorldSliderKind.JUMP_SIZE -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setSize(1.0f + value * 5.0f)
+            WorldSliderKind.JUMP_LIFETIME -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setLifetime((10 + value * 50).toInt())
+            WorldSliderKind.JUMP_ALPHA -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setAlpha((50 + value * 205).toInt())
+            WorldSliderKind.JUMP_ROTATION -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setRotationSpeed(value * 5.0f)
+            WorldSliderKind.JUMP_ANIM_SPEED -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.JUMP_P_COUNT -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPCount((1 + value * 29).toInt())
+            WorldSliderKind.JUMP_P_FORCE -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPForce(0.1f + value * 0.9f)
+            WorldSliderKind.JUMP_P_LIFETIME -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPLifetime((5 + value * 55).toInt())
+            WorldSliderKind.JUMP_P_SIZE -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPSize(0.05f + value * 0.95f)
+            WorldSliderKind.JUMP_P_ANIM_SPEED -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPAnimSpeed(value * 5.0f)
+            WorldSliderKind.TRAIL_LENGTH -> dev.hypnosia.visual.world.trails.TrailSettings.setLength((10 + value * 90).toInt())
+            WorldSliderKind.TRAIL_WIDTH -> dev.hypnosia.visual.world.trails.TrailSettings.setWidth(0.1f + value * 1.9f)
+            WorldSliderKind.TRAIL_ALPHA -> dev.hypnosia.visual.world.trails.TrailSettings.setAlpha((50 + value * 205).toInt())
+            WorldSliderKind.TRAIL_ANIM_SPEED -> dev.hypnosia.visual.world.trails.TrailSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.HIT_COLOR_ANIM_SPEED -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setAnimSpeed(value * 5.0f)
+            WorldSliderKind.NOW_PLAYING_ALPHA -> dev.hypnosia.hud.NowPlayingSettings.setAlpha((50 + value * 205).toInt())
         }
     }
 
@@ -1257,6 +2527,26 @@ class V2ModuleSettingsDrawer(
         val trackX = bounds.x + 93.0f
         val trackW = 112.0f
         AspectRatioSettings.setFreeFromSlider(((mouseX - trackX) / trackW).coerceIn(0.0f, 1.0f))
+    }
+
+    private fun updateCosmeticSlider(mouseX: Float) {
+        val slider = activeCosmeticSlider ?: return
+        val trackX = bounds.x + 93.0f
+        val trackW = 112.0f
+        val value = ((mouseX - trackX) / trackW).coerceIn(0.0f, 1.0f)
+        when (slider) {
+            CosmeticSliderKind.ALPHA -> CosmeticSettings.setChinaHatAlpha((value * 255.0f).toInt())
+            CosmeticSliderKind.Y_OFFSET -> CosmeticSettings.setChinaHatY(value * 4.0f - 2.0f)
+            CosmeticSliderKind.WIDTH -> CosmeticSettings.setChinaHatWidth(value * 2.0f)
+            CosmeticSliderKind.HEIGHT -> CosmeticSettings.setChinaHatHeight(-value * 2.0f)
+            CosmeticSliderKind.ANIM_SPEED -> CosmeticSettings.setChinaHatAnimSpeed(value * 5.0f)
+            CosmeticSliderKind.NIMBUS_ALPHA -> CosmeticSettings.setNimbusAlpha((value * 255.0f).toInt())
+            CosmeticSliderKind.NIMBUS_Y_OFFSET -> CosmeticSettings.setNimbusY(value * 4.0f - 2.0f)
+            CosmeticSliderKind.NIMBUS_RADIUS -> CosmeticSettings.setNimbusRadius(value * 2.0f)
+            CosmeticSliderKind.NIMBUS_TUBE_RADIUS -> CosmeticSettings.setNimbusTubeRadius(value * 0.5f)
+            CosmeticSliderKind.NIMBUS_TILT -> CosmeticSettings.setNimbusTilt((value - 0.5f) * Math.PI.toFloat())
+            CosmeticSliderKind.NIMBUS_ANIM_SPEED -> CosmeticSettings.setNimbusAnimSpeed(value * 5.0f)
+        }
     }
 
     private fun updateImageSlider(mouseX: Float) {
@@ -1476,6 +2766,42 @@ class V2ModuleSettingsDrawer(
                 val entry = ImageRenderConfig.entries().find { it.path == path }
                 entry?.chromaKeyColor ?: 0xFF00FF00.toInt()
             }
+            ColorPickerTarget.COSMETICS_CHINA_HAT -> (CosmeticSettings.chinaHatColor1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_2 -> (CosmeticSettings.chinaHatColor2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_3 -> (CosmeticSettings.chinaHatColor3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_4 -> (CosmeticSettings.chinaHatColor4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_NIMBUS -> (CosmeticSettings.nimbusColor1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_NIMBUS_2 -> (CosmeticSettings.nimbusColor2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_NIMBUS_3 -> (CosmeticSettings.nimbusColor3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.COSMETICS_NIMBUS_4 -> (CosmeticSettings.nimbusColor4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.PARTICLE -> (WorldParticleSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.PARTICLE_2 -> (WorldParticleSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.PARTICLE_3 -> (WorldParticleSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.PARTICLE_4 -> (WorldParticleSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_PARTICLE -> (dev.hypnosia.visual.world.particles.hit.HitParticleSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_PARTICLE_2 -> (dev.hypnosia.visual.world.particles.hit.HitParticleSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_PARTICLE_3 -> (dev.hypnosia.visual.world.particles.hit.HitParticleSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_PARTICLE_4 -> (dev.hypnosia.visual.world.particles.hit.HitParticleSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.ESP_COLOR_1 -> (dev.hypnosia.visual.world.esp.TargetEspSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.ESP_COLOR_2 -> (dev.hypnosia.visual.world.esp.TargetEspSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.ESP_COLOR_3 -> (dev.hypnosia.visual.world.esp.TargetEspSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.ESP_COLOR_4 -> (dev.hypnosia.visual.world.esp.TargetEspSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_CIRCLE_1 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_CIRCLE_2 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_CIRCLE_3 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_CIRCLE_4 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_PARTICLE_1 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.pColor1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_PARTICLE_2 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.pColor2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_PARTICLE_3 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.pColor3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.JUMP_PARTICLE_4 -> (dev.hypnosia.visual.world.jump.JumpCircleSettings.pColor4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.TRAIL_COLOR_1 -> (dev.hypnosia.visual.world.trails.TrailSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.TRAIL_COLOR_2 -> (dev.hypnosia.visual.world.trails.TrailSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.TRAIL_COLOR_3 -> (dev.hypnosia.visual.world.trails.TrailSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.TRAIL_COLOR_4 -> (dev.hypnosia.visual.world.trails.TrailSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_COLOR_1 -> (dev.hypnosia.visual.world.hitcolor.HitColorSettings.color1() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_COLOR_2 -> (dev.hypnosia.visual.world.hitcolor.HitColorSettings.color2() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_COLOR_3 -> (dev.hypnosia.visual.world.hitcolor.HitColorSettings.color3() and 0x00FFFFFF) or (0xFF shl 24)
+            ColorPickerTarget.HIT_COLOR_4 -> (dev.hypnosia.visual.world.hitcolor.HitColorSettings.color4() and 0x00FFFFFF) or (0xFF shl 24)
         }
 
     private fun setColorForTarget(target: ColorPickerTarget, color: Int) {
@@ -1496,6 +2822,42 @@ class V2ModuleSettingsDrawer(
                 ImageRenderConfig.update(updated)
                 pendingImageChromaReload = true
             }
+            ColorPickerTarget.COSMETICS_CHINA_HAT -> CosmeticSettings.setChinaHatColor1(color)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_2 -> CosmeticSettings.setChinaHatColor2(color)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_3 -> CosmeticSettings.setChinaHatColor3(color)
+            ColorPickerTarget.COSMETICS_CHINA_HAT_4 -> CosmeticSettings.setChinaHatColor4(color)
+            ColorPickerTarget.COSMETICS_NIMBUS -> CosmeticSettings.setNimbusColor1(color)
+            ColorPickerTarget.COSMETICS_NIMBUS_2 -> CosmeticSettings.setNimbusColor2(color)
+            ColorPickerTarget.COSMETICS_NIMBUS_3 -> CosmeticSettings.setNimbusColor3(color)
+            ColorPickerTarget.COSMETICS_NIMBUS_4 -> CosmeticSettings.setNimbusColor4(color)
+            ColorPickerTarget.PARTICLE -> WorldParticleSettings.setColor1(color)
+            ColorPickerTarget.PARTICLE_2 -> WorldParticleSettings.setColor2(color)
+            ColorPickerTarget.PARTICLE_3 -> WorldParticleSettings.setColor3(color)
+            ColorPickerTarget.PARTICLE_4 -> WorldParticleSettings.setColor4(color)
+            ColorPickerTarget.HIT_PARTICLE -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setColor1(color)
+            ColorPickerTarget.HIT_PARTICLE_2 -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setColor2(color)
+            ColorPickerTarget.HIT_PARTICLE_3 -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setColor3(color)
+            ColorPickerTarget.HIT_PARTICLE_4 -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setColor4(color)
+            ColorPickerTarget.ESP_COLOR_1 -> dev.hypnosia.visual.world.esp.TargetEspSettings.setColor1(color)
+            ColorPickerTarget.ESP_COLOR_2 -> dev.hypnosia.visual.world.esp.TargetEspSettings.setColor2(color)
+            ColorPickerTarget.ESP_COLOR_3 -> dev.hypnosia.visual.world.esp.TargetEspSettings.setColor3(color)
+            ColorPickerTarget.ESP_COLOR_4 -> dev.hypnosia.visual.world.esp.TargetEspSettings.setColor4(color)
+            ColorPickerTarget.JUMP_CIRCLE_1 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setColor1(color)
+            ColorPickerTarget.JUMP_CIRCLE_2 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setColor2(color)
+            ColorPickerTarget.JUMP_CIRCLE_3 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setColor3(color)
+            ColorPickerTarget.JUMP_CIRCLE_4 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setColor4(color)
+            ColorPickerTarget.JUMP_PARTICLE_1 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPColor1(color)
+            ColorPickerTarget.JUMP_PARTICLE_2 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPColor2(color)
+            ColorPickerTarget.JUMP_PARTICLE_3 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPColor3(color)
+            ColorPickerTarget.JUMP_PARTICLE_4 -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setPColor4(color)
+            ColorPickerTarget.TRAIL_COLOR_1 -> dev.hypnosia.visual.world.trails.TrailSettings.setColor1(color)
+            ColorPickerTarget.TRAIL_COLOR_2 -> dev.hypnosia.visual.world.trails.TrailSettings.setColor2(color)
+            ColorPickerTarget.TRAIL_COLOR_3 -> dev.hypnosia.visual.world.trails.TrailSettings.setColor3(color)
+            ColorPickerTarget.TRAIL_COLOR_4 -> dev.hypnosia.visual.world.trails.TrailSettings.setColor4(color)
+            ColorPickerTarget.HIT_COLOR_1 -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setColor1(color)
+            ColorPickerTarget.HIT_COLOR_2 -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setColor2(color)
+            ColorPickerTarget.HIT_COLOR_3 -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setColor3(color)
+            ColorPickerTarget.HIT_COLOR_4 -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setColor4(color)
         }
     }
 
@@ -1702,6 +3064,55 @@ class V2ModuleSettingsDrawer(
         FOG_DISTANCE,
         FOG_STRENGTH,
         FOG_SOFTNESS,
+        PARTICLE_COUNT,
+        PARTICLE_SPAWN_RATE,
+        PARTICLE_SIZE,
+        PARTICLE_SPEED,
+        PARTICLE_LIFE,
+        PARTICLE_GRAVITY,
+        PARTICLE_ALPHA,
+        PARTICLE_ANIM_SPEED,
+        PARTICLE_SPAWN_HEIGHT,
+        HIT_COUNT,
+        HIT_FORCE,
+        HIT_LIFETIME,
+        HIT_SIZE,
+        HIT_ANIM_SPEED,
+        ESP_SIZE,
+        ESP_LIFETIME,
+        ESP_ALPHA,
+        ESP_ANIM_SPEED,
+        ESP_ROTATION,
+        JUMP_SIZE,
+        JUMP_LIFETIME,
+        JUMP_ALPHA,
+        JUMP_ROTATION,
+        JUMP_ANIM_SPEED,
+        JUMP_P_COUNT,
+        JUMP_P_FORCE,
+        JUMP_P_LIFETIME,
+        JUMP_P_SIZE,
+        JUMP_P_ANIM_SPEED,
+        TRAIL_LENGTH,
+        TRAIL_WIDTH,
+        TRAIL_ALPHA,
+        TRAIL_ANIM_SPEED,
+        HIT_COLOR_ANIM_SPEED,
+        NOW_PLAYING_ALPHA,
+    }
+
+    private enum class CosmeticSliderKind {
+        ALPHA,
+        Y_OFFSET,
+        WIDTH,
+        HEIGHT,
+        ANIM_SPEED,
+        NIMBUS_ALPHA,
+        NIMBUS_Y_OFFSET,
+        NIMBUS_RADIUS,
+        NIMBUS_TUBE_RADIUS,
+        NIMBUS_TILT,
+        NIMBUS_ANIM_SPEED,
     }
 
     private enum class ThemePaletteTarget(val label: String) {
@@ -1717,6 +3128,42 @@ class V2ModuleSettingsDrawer(
         THEME_GRADIENT_START("Gradient A"),
         THEME_GRADIENT_END("Gradient B"),
         IMAGE_CHROMA("Chroma Key"),
+        COSMETICS_CHINA_HAT("China Hat"),
+        COSMETICS_CHINA_HAT_2("China Hat 2"),
+        COSMETICS_CHINA_HAT_3("China Hat 3"),
+        COSMETICS_CHINA_HAT_4("China Hat 4"),
+        COSMETICS_NIMBUS("Nimbus"),
+        COSMETICS_NIMBUS_2("Nimbus 2"),
+        COSMETICS_NIMBUS_3("Nimbus 3"),
+        COSMETICS_NIMBUS_4("Nimbus 4"),
+        PARTICLE("Particle"),
+        PARTICLE_2("Particle 2"),
+        PARTICLE_3("Particle 3"),
+        PARTICLE_4("Particle 4"),
+        HIT_PARTICLE("Hit 1"),
+        HIT_PARTICLE_2("Hit 2"),
+        HIT_PARTICLE_3("Hit 3"),
+        HIT_PARTICLE_4("Hit 4"),
+        ESP_COLOR_1("ESP 1"),
+        ESP_COLOR_2("ESP 2"),
+        ESP_COLOR_3("ESP 3"),
+        ESP_COLOR_4("ESP 4"),
+        JUMP_CIRCLE_1("Jump 1"),
+        JUMP_CIRCLE_2("Jump 2"),
+        JUMP_CIRCLE_3("Jump 3"),
+        JUMP_CIRCLE_4("Jump 4"),
+        JUMP_PARTICLE_1("JP 1"),
+        JUMP_PARTICLE_2("JP 2"),
+        JUMP_PARTICLE_3("JP 3"),
+        JUMP_PARTICLE_4("JP 4"),
+        TRAIL_COLOR_1("Trail 1"),
+        TRAIL_COLOR_2("Trail 2"),
+        TRAIL_COLOR_3("Trail 3"),
+        TRAIL_COLOR_4("Trail 4"),
+        HIT_COLOR_1("Hit C 1"),
+        HIT_COLOR_2("Hit C 2"),
+        HIT_COLOR_3("Hit C 3"),
+        HIT_COLOR_4("Hit C 4"),
     }
 
     private enum class ColorPickerDrag {
@@ -1746,7 +3193,7 @@ class V2ModuleSettingsDrawer(
             if (fileName.equals(selected, ignoreCase = true) &&
                 ImageRenderConfig.entries().find { it.path.equals(fileName, ignoreCase = true) } != null
             ) {
-                height += 144.0f
+                height += 192.0f
             }
         }
         return height + 16.0f
@@ -1866,5 +3313,6 @@ class V2ModuleSettingsDrawer(
         private const val COLOR_SWATCH_X = 206.0f
         private const val CONTENT_TOP = 67.0f
         private const val CONTENT_BOTTOM_PAD = 12.0f
+        private const val PARTICLE_TEX_ROW_H = 30.0f
     }
 }

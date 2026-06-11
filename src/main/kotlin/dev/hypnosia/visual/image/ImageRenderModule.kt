@@ -11,6 +11,8 @@ import net.minecraft.client.render.RenderTickCounter
 import net.minecraft.client.texture.NativeImage
 import net.minecraft.util.Identifier
 import org.slf4j.LoggerFactory
+import java.awt.AlphaComposite
+import java.awt.image.BufferedImage
 import java.nio.file.Files
 import javax.imageio.ImageIO
 import javax.imageio.ImageReader
@@ -213,19 +215,70 @@ object ImageRenderModule {
                     iis.close()
                     return
                 }
+
+                val screenW = reader.getWidth(0)
+                val screenH = reader.getHeight(0)
+                // Persistent canvas — carries pixels forward between frames (disposal=doNotDispose)
+                val canvas = BufferedImage(screenW, screenH, BufferedImage.TYPE_INT_ARGB)
+                // Saved canvas for disposal=restoreToPrevious
+                var savedCanvas: BufferedImage? = null
+
+                val uniqueName = "${name.lowercase().replace(" ", "_")}_${System.identityHashCode(entry)}"
+
                 for (i in 0 until count) {
-                    val bufferedImage = reader.read(i)
-                    if (bufferedImage.width > MAX_IMAGE_DIMENSION || bufferedImage.height > MAX_IMAGE_DIMENSION) {
-                        logger.warn("GIF frame {} exceeds max dimensions ({}x{}), skipping", i, bufferedImage.width, bufferedImage.height)
+                    val rawFrame = reader.read(i)
+
+                    // Read frame metadata
+                    val meta = reader.getImageMetadata(i)
+                    val root = meta.getAsTree("javax_imageio_gif_image_1.0") as? IIOMetadataNode
+
+                    val idNode = root?.getElementsByTagName("ImageDescriptor")?.item(0) as? IIOMetadataNode
+                    val fx = idNode?.getAttribute("imageLeftPosition")?.toIntOrNull() ?: 0
+                    val fy = idNode?.getAttribute("imageTopPosition")?.toIntOrNull() ?: 0
+
+                    val gce = root?.getElementsByTagName("GraphicControlExtension")?.item(0) as? IIOMetadataNode
+                    val disposalStr = gce?.getAttribute("disposalMethod") ?: "none"
+
+                    // For disposal=restoreToPrevious, snapshot BEFORE drawing
+                    if (disposalStr == "restoreToPrevious") {
+                        savedCanvas = deepCopyArgb(canvas)
+                    }
+
+                    // Convert indexed frame to ARGB preserving transparency, then composite onto canvas
+                    val argbFrame = indexedToArgb(rawFrame)
+                    val g = canvas.createGraphics()
+                    g.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER)
+                    g.drawImage(argbFrame, fx, fy, null)
+                    g.dispose()
+
+                    if (canvas.width > MAX_IMAGE_DIMENSION || canvas.height > MAX_IMAGE_DIMENSION) {
+                        logger.warn("GIF frame {} exceeds max dimensions, skipping", i)
                         continue
                     }
-                    val nativeImage = bufferedImageToNativeImage(bufferedImage, entry)
+
+                    // Snapshot composited canvas as the output frame
+                    val snapshot = deepCopyArgb(canvas)
+                    val nativeImage = bufferedImageToNativeImage(snapshot, entry)
                     val delayMs = readFrameDelay(reader, i)
-                    val id = Identifier.of(
-                        HypnosiaClient.MOD_ID,
-                        "dynamic/images/gif_${name.lowercase().replace(" ", "_")}_frame_$i"
-                    )
+                    val id = Identifier.of(HypnosiaClient.MOD_ID, "dynamic/images/gif_${uniqueName}_frame_$i")
                     frames.add(GifImage.Frame(id, nativeImage, delayMs))
+
+                    // Apply disposal for next frame
+                    when (disposalStr) {
+                        "restoreToBackgroundColor" -> {
+                            val gc = canvas.createGraphics()
+                            gc.composite = AlphaComposite.getInstance(AlphaComposite.CLEAR)
+                            gc.fillRect(fx, fy, rawFrame.width, rawFrame.height)
+                            gc.dispose()
+                        }
+                        "restoreToPrevious" -> {
+                            val gc = canvas.createGraphics()
+                            gc.composite = AlphaComposite.getInstance(AlphaComposite.SRC)
+                            gc.drawImage(savedCanvas ?: canvas, 0, 0, null)
+                            gc.dispose()
+                        }
+                        // "doNotDispose", "none" — leave canvas as-is
+                    }
                 }
                 reader.dispose()
                 iis.close()
@@ -240,6 +293,27 @@ object ImageRenderModule {
         } catch (e: Exception) {
             logger.error("Failed to load GIF '{}'", entry.path, e)
         }
+    }
+
+    // Convert any BufferedImage (indexed or otherwise) to TYPE_INT_ARGB preserving transparency
+    private fun indexedToArgb(src: BufferedImage): BufferedImage {
+        if (src.type == BufferedImage.TYPE_INT_ARGB) return src
+        val dst = BufferedImage(src.width, src.height, BufferedImage.TYPE_INT_ARGB)
+        val g = dst.createGraphics()
+        // SRC composite: copies source pixels as-is including alpha=0 from IndexColorModel
+        g.composite = AlphaComposite.getInstance(AlphaComposite.SRC)
+        g.drawImage(src, 0, 0, null)
+        g.dispose()
+        return dst
+    }
+
+    private fun deepCopyArgb(src: BufferedImage): BufferedImage {
+        val dst = BufferedImage(src.width, src.height, BufferedImage.TYPE_INT_ARGB)
+        val g = dst.createGraphics()
+        g.composite = AlphaComposite.getInstance(AlphaComposite.SRC)
+        g.drawImage(src, 0, 0, null)
+        g.dispose()
+        return dst
     }
 
     /** Ищет файл в папке images/<subfolder>/ внутри мода */

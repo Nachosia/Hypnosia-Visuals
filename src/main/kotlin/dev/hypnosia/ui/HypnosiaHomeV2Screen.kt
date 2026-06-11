@@ -51,8 +51,7 @@ class HypnosiaHomeV2Screen : Screen(Text.literal("Hypnosia Home V2")) {
         dev.hypnosia.ui.render.HypnosiaRenderUtils.captureThemeBackdrop(context)
 
         HypnosiaHomeV2Layout.updateDrawer()
-        val drawerHeight = HypnosiaHomeV2Layout.drawerHeight
-        ImageRenderModule.renderOverlay(context, if (HypnosiaHomeV2Layout.selectedSettingsModuleId == "client.images") drawerHeight else 0.0f)
+        ImageRenderModule.renderOverlay(context)
 
         rootLayout.render(context)
     }

@@ -15,7 +15,9 @@ import dev.hypnosia.license.LicenseRole
 import dev.hypnosia.other.FriendsManager
 import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.visual.AspectRatioSettings
+import dev.hypnosia.visual.cosmetic.CosmeticSettings
 import dev.hypnosia.visual.image.ImageRenderConfig
+import dev.hypnosia.visual.world.particles.WorldParticleSettings
 import dev.hypnosia.visual.image.ImageRenderModule
 import dev.hypnosia.world.WorldVisualSettings
 import dev.hypnosia.license.HypnosiaPaths
@@ -148,10 +150,19 @@ object HypnosiaHomeV2Layout {
             mapOf(
                 Category.Visuals to listOf(
                     ModuleEntry("visuals.aspect_ratio", Category.Visuals, "Aspect Ratio", AspectRatioSettings.isEnabled()),
+                    ModuleEntry("visuals.cosmetics", Category.Visuals, "Cosmetics", CosmeticSettings.enabled()),
+                    ModuleEntry("visuals.cosmetics.china_hat", Category.Visuals, "China Hat", CosmeticSettings.chinaHatEnabled(), hasSettings = true),
+                    ModuleEntry("visuals.cosmetics.nimbus", Category.Visuals, "Nimbus", CosmeticSettings.nimbusEnabled(), hasSettings = true),
                 ),
                 Category.World to listOf(
                     ModuleEntry("world.fullbright", Category.World, "Fullbright", moduleEnabled("world.fullbright", moduleEnabled("visuals.fullbright", true)), hasSettings = false),
                     ModuleEntry("world.custom_fog", Category.World, "Custom Fog", WorldVisualSettings.customFogEnabled()),
+                    ModuleEntry("world.particles", Category.World, "World Particles", WorldParticleSettings.enabled(), hasSettings = true),
+                    ModuleEntry("world.hit_particles", Category.World, "Hit Particles", dev.hypnosia.visual.world.particles.hit.HitParticleSettings.enabled(), hasSettings = true),
+                    ModuleEntry("world.target_esp", Category.World, "Target ESP", dev.hypnosia.visual.world.esp.TargetEspSettings.enabled(), hasSettings = true),
+                    ModuleEntry("world.jump_circles", Category.World, "Jump Circles", dev.hypnosia.visual.world.jump.JumpCircleSettings.enabled(), hasSettings = true),
+                    ModuleEntry("world.trails", Category.World, "Trails", dev.hypnosia.visual.world.trails.TrailSettings.enabled(), hasSettings = true),
+                    ModuleEntry("world.hit_color", Category.World, "Hit Color", dev.hypnosia.visual.world.hitcolor.HitColorSettings.enabled(), hasSettings = true),
                 ),
                 Category.Client to listOf(
                     ModuleEntry("client.icons", Category.Client, "Icons", moduleEnabled("client.icons", true)),
@@ -186,6 +197,15 @@ object HypnosiaHomeV2Layout {
             when (id) {
                 "hud.hotbar" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.HOTBAR, entry.enabled)
                 "hud.armor" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.ARMOR, entry.enabled)
+                "visuals.cosmetics" -> CosmeticSettings.setEnabled(entry.enabled)
+                "visuals.cosmetics.china_hat" -> CosmeticSettings.setChinaHatEnabled(entry.enabled)
+                "visuals.cosmetics.nimbus" -> CosmeticSettings.setNimbusEnabled(entry.enabled)
+                "world.particles" -> WorldParticleSettings.setEnabled(entry.enabled)
+                "world.hit_particles" -> dev.hypnosia.visual.world.particles.hit.HitParticleSettings.setEnabled(entry.enabled)
+                "world.target_esp" -> dev.hypnosia.visual.world.esp.TargetEspSettings.setEnabled(entry.enabled)
+                "world.jump_circles" -> dev.hypnosia.visual.world.jump.JumpCircleSettings.setEnabled(entry.enabled)
+                "world.trails" -> dev.hypnosia.visual.world.trails.TrailSettings.setEnabled(entry.enabled)
+                "world.hit_color" -> dev.hypnosia.visual.world.hitcolor.HitColorSettings.setEnabled(entry.enabled)
                 "hud.target" -> TargetHudSettings.setEnabled(entry.enabled)
                 "hud.player_info" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.PLAYER_INFO, entry.enabled)
                 "hud.inventory" -> HudModuleSettings.setEnabled(HudModuleSettings.Module.INVENTORY, entry.enabled)

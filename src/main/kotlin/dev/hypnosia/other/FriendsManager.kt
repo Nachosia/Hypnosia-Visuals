@@ -82,7 +82,7 @@ object FriendsManager {
         Files.write(file, friends.sorted().joinToString("\n").toByteArray(StandardCharsets.UTF_8))
     }
 
-    private fun isFriend(name: String): Boolean {
+    fun isFriend(name: String): Boolean {
         synchronized(lock) {
             ensureLoadedLocked()
             return friends.contains(name.lowercase())

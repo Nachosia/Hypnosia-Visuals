@@ -7,10 +7,13 @@ import dev.hypnosia.hud.HotKeyHud
 import dev.hypnosia.hud.HudModulesHud
 import dev.hypnosia.hud.InventoryHud
 import dev.hypnosia.hud.ModuleHotkeys
+import dev.hypnosia.hud.NowPlayingHud
 import dev.hypnosia.hud.PlayerInfoHud
 import dev.hypnosia.hud.PotionsHud
 import dev.hypnosia.hud.TargetHud
 import dev.hypnosia.hud.WatermarkHud
+import dev.hypnosia.visual.cosmetic.CosmeticRenderModule
+import dev.hypnosia.visual.cosmetic.CosmeticSettings
 import dev.hypnosia.visual.image.ImageRenderModule
 import dev.hypnosia.media.GlobalMediaTracker
 import dev.hypnosia.license.ActKeyCommand
@@ -50,7 +53,16 @@ object HypnosiaClient : ClientModInitializer {
     override fun onInitializeClient() {
         HypnosiaShaders.initialize()
         HypnosiaConfigProfiles.bootstrap()
+        CosmeticRenderModule.register()
+        CosmeticSettings.ensureLoaded()
+        dev.hypnosia.visual.world.particles.WorldParticleRenderer.register()
+        dev.hypnosia.visual.world.particles.hit.HitParticleRenderer.register()
+        dev.hypnosia.visual.world.esp.TargetEspRenderer.register()
+        dev.hypnosia.visual.world.jump.JumpCircleRenderer.register()
+        dev.hypnosia.visual.world.trails.TrailRenderer.register()
+        dev.hypnosia.visual.world.hitcolor.HitColorManager.register()
         WatermarkHud.register()
+        NowPlayingHud.register()
         ImageRenderModule.register()
         GlobalMediaTracker.start()
         HudModulesHud.register()
@@ -127,6 +139,7 @@ object HypnosiaClient : ClientModInitializer {
             AccountManager.tickNotifications(client)
             ImageRenderModule.tickDrag(client)
             HudModulesHud.tickDrag(client)
+            NowPlayingHud.tickDrag(client)
             TargetHud.tickDrag(client)
             PlayerInfoHud.tickDrag(client)
             InventoryHud.tickDrag(client)

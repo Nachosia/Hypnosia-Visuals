@@ -4,6 +4,7 @@ import dev.hypnosia.HypnosiaClient
 import dev.hypnosia.license.AccountManager
 import dev.hypnosia.license.AccountState
 import dev.hypnosia.license.LicenseRole
+import dev.hypnosia.media.GlobalMediaTracker
 import dev.hypnosia.media.MediaBridge
 import dev.hypnosia.other.StreamerModeSettings
 import dev.hypnosia.ui.animation.FigmaAnimation
@@ -41,25 +42,38 @@ object WatermarkHud {
         val cpu: Int = 0,
     )
 
-    var trackTitle: String = "name track"
-    var trackArtist: String = "avtor track"
+    // Media state proxies — kept for backward compat, synced from GlobalMediaTracker
+    var trackTitle: String
+        get() = GlobalMediaTracker.trackTitle
+        set(v) { GlobalMediaTracker.trackTitle = v }
+    var trackArtist: String
+        get() = GlobalMediaTracker.trackArtist
+        set(v) { GlobalMediaTracker.trackArtist = v }
     var trackProgress: Float = 0.0f
-    var trackPositionMs: Long = 0L
-    var trackDurationMs: Long = 0L
-    var lastProgressUpdate: Long = 0L
+    var trackPositionMs: Long
+        get() = GlobalMediaTracker.trackPositionMs
+        set(v) { GlobalMediaTracker.trackPositionMs = v }
+    var trackDurationMs: Long
+        get() = GlobalMediaTracker.trackDurationMs
+        set(v) { GlobalMediaTracker.trackDurationMs = v }
+    var lastProgressUpdate: Long
+        get() = GlobalMediaTracker.lastProgressUpdate
+        set(v) { GlobalMediaTracker.lastProgressUpdate = v }
     var trackElapsed: String = "3:27"
     var trackDuration: String = "2:23"
-    var coverTextureId: Identifier? = null
-    var isMediaPlaying: Boolean = false
+    var coverTextureId: Identifier?
+        get() = GlobalMediaTracker.coverTextureId
+        set(v) { GlobalMediaTracker.coverTextureId = v }
+    var isMediaPlaying: Boolean
+        get() = GlobalMediaTracker.isMediaPlaying
+        set(v) { GlobalMediaTracker.isMediaPlaying = v }
 
-    fun getSmoothProgress(): Float {
-        if (!isMediaPlaying || trackDurationMs <= 0) {
-            return if (trackDurationMs > 0) trackPositionMs.toFloat() / trackDurationMs.toFloat() else 0.0f
-        }
-        val elapsed = System.currentTimeMillis() - lastProgressUpdate
-        val smooth = trackPositionMs + elapsed
-        return (smooth.toFloat() / trackDurationMs.toFloat()).coerceIn(0.0f, 1.0f)
+    // Called by GlobalMediaTracker after state update — triggers any WatermarkHud-specific refresh
+    fun syncFromTracker() {
+        // No-op: all fields are now proxies, nothing extra needed
     }
+
+    fun getSmoothProgress(): Float = GlobalMediaTracker.getSmoothProgress()
 
     private var lastV1HoverX = 0.0f
     private var lastV1HoverWidth = V1_MAIN_WIDTH
@@ -127,19 +141,10 @@ object WatermarkHud {
 
         val collapsedX = fixedWidth * 0.5f - V1_MAIN_WIDTH * 0.5f
         val centerX = collapsedX + V1_MAIN_WIDTH * 0.5f
-        val currentWidth = lerp(V1_MAIN_WIDTH, V1_HOVER_WIDTH, musicExpand.value)
-        val currentHeight = lerp(V1_MAIN_HEIGHT, V1_HOVER_HEIGHT, musicExpand.value)
-        val currentX = centerX - currentWidth * 0.5f
-        val hover = client.currentScreen != null &&
-            mouseX in currentX..(currentX + currentWidth) &&
-            mouseY in V1_Y..(V1_Y + currentHeight)
-        musicExpand.target = if (hover) 1.0f else 0.0f
-        val expand = musicExpand.update(dt)
-        val isExpandedNow = expand > 0.1f
-        if (isExpandedNow != lastLoggedExpand) {
-            lastLoggedExpand = isExpandedNow
-            println("[Hypnosia] V1 expanded: $isExpandedNow (screen=${client.currentScreen?.javaClass?.simpleName})")
-        }
+        // TODO: expand temporarily disabled
+        musicExpand.target = 0.0f
+        musicExpand.update(dt)
+        val expand = 0.0f
 
         context.matrices.pushMatrix()
         context.matrices.scale(fixedScale, fixedScale)

@@ -11,6 +11,7 @@ object HudModuleSettings {
         COOLDOWNS("cooldowns"),
         POTIONS("potions"),
         HOTKEYS("hotkeys"),
+        NOW_PLAYING("now_playing"),
     }
 
     enum class Version {
@@ -66,6 +67,7 @@ object HudModuleSettings {
         Module.COOLDOWNS to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.39f, slotHighlight = false),
         Module.POTIONS to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.51f, slotHighlight = false),
         Module.HOTKEYS to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.02f, y = 0.63f, slotHighlight = false),
+        Module.NOW_PLAYING to State(enabled = false, version = Version.V1, axis = Axis.X, x = 0.01f, y = 0.82f, slotHighlight = false),
     )
     private val states = linkedMapOf<Module, State>().apply {
         defaultStates.forEach { (module, state) -> put(module, state.copy()) }

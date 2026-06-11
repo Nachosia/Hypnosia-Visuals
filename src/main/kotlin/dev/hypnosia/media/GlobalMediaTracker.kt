@@ -12,8 +12,27 @@ import kotlin.concurrent.scheduleAtFixedRate
 
 object GlobalMediaTracker {
 
+    // Public media state — read by WatermarkHud and NowPlayingHud
+    var trackTitle: String = ""
+    var trackArtist: String = ""
+    var trackPositionMs: Long = 0L
+    var trackDurationMs: Long = 0L
+    var lastProgressUpdate: Long = 0L
+    var isMediaPlaying: Boolean = false
+    var coverTextureId: Identifier? = null
+
+    fun getSmoothProgress(): Float {
+        if (!isMediaPlaying || trackDurationMs <= 0) {
+            return if (trackDurationMs > 0) trackPositionMs.toFloat() / trackDurationMs.toFloat() else 0.0f
+        }
+        val elapsed = System.currentTimeMillis() - lastProgressUpdate
+        val smooth = trackPositionMs + elapsed
+        return (smooth.toFloat() / trackDurationMs.toFloat()).coerceIn(0.0f, 1.0f)
+    }
+
+    fun isActive(): Boolean = trackTitle.isNotBlank() && trackTitle != "Minecraft"
+
     private var lastTitle: String = ""
-    private var lastUpdateTime: Long = 0
     private var consecutiveFailures = 0
     private const val MAX_FAILURES = 5
     private var timer: Timer? = null
@@ -51,38 +70,35 @@ object GlobalMediaTracker {
             if (media != null && media.title.isNotBlank()) {
                 consecutiveFailures = 0
 
-                // Обновляем UI в render thread
                 MinecraftClient.getInstance().execute {
-                    WatermarkHud.trackTitle = media.title
-                    WatermarkHud.trackArtist = media.artist
-                    WatermarkHud.trackDurationMs = media.durationMs
-                    WatermarkHud.trackPositionMs = media.positionMs
-                    WatermarkHud.lastProgressUpdate = System.currentTimeMillis()
-                    WatermarkHud.isMediaPlaying = media.isPlaying
-                    lastUpdateTime = System.currentTimeMillis()
+                    trackTitle = media.title
+                    trackArtist = media.artist
+                    trackDurationMs = media.durationMs
+                    trackPositionMs = media.positionMs
+                    lastProgressUpdate = System.currentTimeMillis()
+                    isMediaPlaying = media.isPlaying
 
-                    // Обложка
-                    media.thumbnailPath?.let { path ->
-                        loadThumbnail(path)
-                    }
+                    // Sync to WatermarkHud for V1 display
+                    WatermarkHud.syncFromTracker()
+
+                    media.thumbnailPath?.let { path -> loadThumbnail(path) }
                 }
 
-                // Лог только при смене трека (не каждые 5 сек)
                 if (media.title != lastTitle) {
                     println("[Hypnosia] Now playing: ${media.title} — ${media.artist}")
                     lastTitle = media.title
                 }
 
             } else {
-                // Ничего не играет
                 MinecraftClient.getInstance().execute {
-                    if (WatermarkHud.trackTitle.isNotEmpty()) {
-                        WatermarkHud.trackTitle = ""
-                        WatermarkHud.trackArtist = ""
-                        WatermarkHud.trackPositionMs = 0
-                        WatermarkHud.trackDurationMs = 0
-                        WatermarkHud.isMediaPlaying = false
-                        WatermarkHud.coverTextureId = null
+                    if (trackTitle.isNotEmpty()) {
+                        trackTitle = ""
+                        trackArtist = ""
+                        trackPositionMs = 0
+                        trackDurationMs = 0
+                        isMediaPlaying = false
+                        coverTextureId = null
+                        WatermarkHud.syncFromTracker()
                     }
                 }
                 lastTitle = ""
@@ -103,23 +119,18 @@ object GlobalMediaTracker {
     private fun loadThumbnail(path: String) {
         try {
             val file = File(path)
-            println("[Hypnosia] Loading thumbnail from: ${file.absolutePath}, exists=${file.exists()}, size=${file.length()}")
-            if (!file.exists() || file.length() == 0L) {
-                println("[Hypnosia] Thumbnail file not found or empty")
-                return
-            }
+            if (!file.exists() || file.length() == 0L) return
 
             val image = net.minecraft.client.texture.NativeImage.read(file.inputStream())
-            println("[Hypnosia] Thumbnail loaded: ${image.width}x${image.height}")
             val texture = NativeImageBackedTexture({ "Hypnosia media thumbnail" }, image)
             texture.upload()
             val id = Identifier.of("hypnosia", "media_cover")
             MinecraftClient.getInstance().textureManager.registerTexture(id, texture)
-            WatermarkHud.coverTextureId = id
-            println("[Hypnosia] Thumbnail texture registered: $id")
+            coverTextureId = id
+            WatermarkHud.syncFromTracker()
+            println("[Hypnosia] Thumbnail registered: $id")
         } catch (e: Exception) {
             println("[Hypnosia] Thumbnail load failed: ${e.javaClass.simpleName}: ${e.message}")
-            e.printStackTrace()
         }
     }
 
@@ -137,8 +148,8 @@ object GlobalMediaTracker {
         val clicked = !wasLeftDown && isLeftDown
         wasLeftDown = isLeftDown
 
-        if (clicked && WatermarkHud.handleV1PlayerClick(mouseX, mouseY)) {
-            // Click handled
+        if (clicked) {
+            WatermarkHud.handleV1PlayerClick(mouseX, mouseY)
         }
     }
 }

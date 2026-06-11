@@ -29,7 +29,7 @@ object HypnosiaConfigProfiles {
     private const val SELECTED_KEY = "ui.selected.config"
     private const val FORMAT = "hypnosia-config"
     private const val VERSION = 1
-    private const val MAX_SETTINGS_COUNT = 256
+    private const val MAX_SETTINGS_COUNT = 512
     private const val MAX_SETTING_KEY_LENGTH = 96
     private const val MAX_SETTING_VALUE_LENGTH = 512
 
@@ -183,6 +183,12 @@ object HypnosiaConfigProfiles {
         StreamerModeSettings.reload()
         AspectRatioSettings.reload()
         ImageRenderModule.reload()
+        dev.hypnosia.visual.world.particles.WorldParticleSettings.reload()
+        dev.hypnosia.visual.world.particles.hit.HitParticleSettings.reload()
+        dev.hypnosia.visual.world.jump.JumpCircleSettings.reload()
+        dev.hypnosia.visual.world.trails.TrailSettings.reload()
+        dev.hypnosia.visual.world.hitcolor.HitColorSettings.reload()
+        dev.hypnosia.visual.world.esp.TargetEspSettings.reload()
     }
 
     private fun currentSnapshot(): Map<String, String> =

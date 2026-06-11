@@ -453,7 +453,8 @@ object TargetHud {
             target != client.player &&
             !target.isRemoved &&
             !target.isDead &&
-            target.health > 0.0f
+            target.health > 0.0f &&
+            !target.isInvisible
     }
 
     private fun targetName(target: LivingEntity): String =
